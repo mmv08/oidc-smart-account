@@ -1,177 +1,262 @@
-# Architecture decision: OIDC-assisted smart-account bootstrap and recovery
+# Architecture: provider identity and claim-bound account management
 
-Status: implemented reference design; not audited for production deployment.
+Status: implemented reference design; not audited or production-ready.
 
-## 1. Security objective
+## 1. Objective
 
-A Google or Apple login is used only to authorize one narrowly defined account-management intent:
+The protocol records a stable OpenID Connect (OIDC) identity commitment on an account and verifies fresh authenticated claims against it before allowing one exact account-management action.
 
-- create a particular account with a particular initial signer;
-- add one particular signer; or
-- replace one particular signer.
+The core dependency direction is:
 
-It is never accepted by the account's ordinary transaction-validation path. Ordinary account operations use independent cryptographic signers represented in the ERC-7913 format. ERC-7913 is an Ethereum standard that represents a signer as `verifier address || public key`, allowing Ethereum ECDSA addresses, ERC-1271 contract signers, P-256/passkey keys, and other verifier/key pairs to use one interface.
+```text
+OIDCAccountFactory / OIDCRecoveryController
+                    ↓
+          IOIDCClaimVerifier
+                    ↓
+ direct JWT | proof registry | oracle | zero-knowledge proof | other adapter
+```
 
-## 2. Considered architectures
+The bottom layer is intentionally unspecified. Oracle membership, attestor thresholds, JSON Web Key Set (JWKS) publication, zero-knowledge circuits, and direct JSON Web Token (JWT) parsing are adapter concerns, not account-policy concepts.
 
-### A. Verify raw Google/Apple JSON Web Tokens on-chain
+## 2. Four distinct objects
 
-A JSON Web Token (JWT) is a signed text token containing claims such as issuer, audience, subject, issue time, and expiry. The contract could verify the provider's RSA signature using public keys copied on-chain.
+### 2.1 Provider policy
 
-Rejected for v1 because:
+A provider policy identifies the provider and exact OIDC client context accepted for an account:
 
-- the complete token and its claims become public calldata, exposing a stable provider subject and often email/profile data;
-- safe JSON parsing and strict JWT validation add substantial contract complexity;
-- provider-key rotation can cause brittle on-chain availability;
-- a valid login still does not show that the user understood the blockchain action.
+```text
+providerId = keccak256(canonical issuer)
+providerPolicyId = keccak256(
+    typed OIDCPolicy(providerId, keccak256(client ID))
+)
+```
 
-### B. One off-chain verifier signs an on-chain authorization
+The initial canonical issuers are Google (`https://accounts.google.com`) and Apple (`https://appleid.apple.com`). The TypeScript helper accepts Google's historical `accounts.google.com` issuer form and normalizes it to the canonical provider identifier.
 
-This avoids publishing the JWT, but one compromised verifier can manufacture recoveries. That is too much custody-like power for a production design.
+The OAuth client ID is part of the policy. It prevents a claim issued for another application from identifying the user under this account's policy.
 
-### C. Threshold off-chain OIDC verifiers plus constrained on-chain recovery — selected
+### 2.2 Stable user identity
 
-Independent verifier services validate the same OIDC login and exact action request. A threshold, intended to be 2-of-3, signs a short-lived EIP-712 attestation. EIP-712 is Ethereum's typed-data signing format; it binds signatures to named fields, the chain, and a verifying contract.
+OIDC identifies a user through `sub`, the provider's subject claim, interpreted under the issuer/client policy. Email is not identity: it may change, be reassigned, or be hidden behind Apple's private relay.
 
-The chain receives only:
+The account stores:
 
-- an opaque, per-account identity commitment;
-- exact account-management fields;
-- a provider-policy identifier and provider-key thumbprint;
-- verifier signatures.
+```text
+identityCommitment = keccak256(
+    typed OIDCIdentity(providerPolicyId, keccak256(sub), identitySalt)
+)
+```
 
-The JWT, provider subject, authorization code, email, and profile never go on-chain.
+The account never needs the raw subject. The proof adapter must establish that its authenticated claim maps to the stored commitment. The identity salt is separate from the public CREATE2 deployment salt.
 
-This design does not make Google, Apple, or the verifier set trustless. It makes their authority narrow, visible, delayed for recovery, and independent from normal transaction signing.
+The protocol does not enforce one-account-per-identity. A provider identity may intentionally control several separately salted accounts without a global linkable registry.
 
-### D. Zero-knowledge proof of a provider token
+### 2.3 Fresh provider claim
 
-A zero-knowledge proof can prove selected JWT claims without exposing the token. It can reduce trust in off-chain attestors, as systems such as Sui zkLogin demonstrate. It was not selected because the requested first version does not require it and a correct circuit, prover, key-rotation mechanism, and audit would dominate the implementation.
+`IOIDCClaimVerifier.verifyClaim(proof)` returns only:
 
-## 3. Components and data flow
+```solidity
+struct VerifiedOIDCClaim {
+    bytes32 providerPolicyId;
+    bytes32 identityCommitment;
+    bytes32 nonce;
+    uint64 issuedAt;
+    uint64 expiresAt;
+}
+```
 
-### 3.1 IndependentKeyAccount
+The result states: this provider/client policy authenticated this committed identity, with this provider-signed nonce, during this time interval.
 
-The account uses OpenZeppelin's ERC-7913 multisigner support with two small execution paths. A 20-byte address signer can submit `execute` directly. An address-less signer, such as a passkey, signs an EIP-712 `Execution` request that any untrusted relayer can submit through `executeSigned`.
+The adapter authenticates token or proof syntax and cryptography. The factory/controller independently compares every returned field needed for authorization and enforces on-chain freshness.
 
-Properties:
+### 2.4 Authorized action
 
-- ordinary operations validate only installed cryptographic signers;
-- signed executions bind target, value, calldata hash, execution nonce, deadline, chain, and exact account deployment;
-- the execution nonce is consumed atomically with the external call, preventing successful replay while allowing a reverted call to be retried until its deadline;
-- signer threshold is one in this deliberately small design;
-- address signers can manage signers directly, while address-less signers use an authorized signed self-call;
-- relayers are optional, untrusted transports and receive no account authority;
-- OIDC contracts are not called during ordinary validation or execution;
-- the recovery manager can only add or replace a signer;
-- the account can permanently disable OIDC recovery;
-- contracts are not proxies and contain no upgrade hook.
+A valid login is not account-management intent. The exact EIP-712 action digest is used as the OIDC authorization request's `nonce` string. EIP-712 is Ethereum's typed structured-data hashing scheme; here it binds a nonce to named fields, chain ID, and an exact contract.
 
-### 3.2 IdentityAccountFactory
+The provider-authenticated chain becomes:
 
-The factory uses CREATE2, an Ethereum instruction for deterministic contract addresses. The creation attestation binds:
+```text
+provider-authenticated nonce
+        = exact EIP-712 action digest
+        ↓
+matching registered identity and provider policy
+        ↓
+constrained on-chain state transition
+```
 
-- the predicted account address;
-- chain ID;
-- factory address;
-- random per-account identity commitment;
-- exact initial signer hash;
-- one-time intent nonce.
+## 3. Contract responsibilities
 
-The new signer must also prove possession by signing the exact intent digest. A transaction observer may submit the same deployment first, but cannot substitute a signer or account. The resulting account remains controlled by the intended key, so front-running is harmless apart from relayer/payment policy outside this repository.
+### 3.1 `IOIDCClaimVerifier`
 
-### 3.3 IdentityIntentVerifier
+This is a read-only fact-verification boundary. It does not:
 
-The verifier contract checks a threshold of registered attestor signatures over an EIP-712 `Intent`. The common intent includes action, account, controller, current and new signer hashes, account recovery nonce, random intent nonce, provider policy, issuance/validity times, chain ID, and attestor-set epoch.
+- consume recovery nonces;
+- choose account actions;
+- mutate account signers;
+- implement recovery delays;
+- define oracle, attestor, or governance policy.
 
-Each packed attestation separately binds the common intent digest, the exact provider-key hash, and the ID-token `iat` observed by that attestor. This allows independent logins to aggregate if they occur in different seconds or straddle a provider-key rotation. The legacy common `Intent.providerKeyHash` field is required to be zero; on-chain submission uses `abi.encode(providerKeyHash, tokenIssuedAt, signature)` for each attestor. Quorum members must use the same provider policy ID, issuer, and OIDC audience.
+A verifier is trusted to return claims only for authentic provider evidence under its stated policy. A state-backed proof registry, direct cryptographic verifier, or zero-knowledge verifier can all implement the same interface.
 
-It checks and consumes each digest once. Domain separation, explicit chain ID, controller, account, action, recovery nonce, and intent nonce stop ordinary replay, cross-contract reuse, cross-chain reuse, and reuse for another account-management action.
+### 3.2 `OIDCAccount`
 
-### 3.4 IdentityRecoveryManager
+Each account has immutable:
 
-Recovery has two on-chain phases:
+- `identityController`;
+- `providerPolicyId`;
+- `identityCommitment`.
 
-1. **Schedule:** verify/consume the OIDC attestation and new-key proof, increment the recovery nonce immediately, and store only the constrained signer change.
-2. **Finalize:** after the immutable delay and before the immutable execution window expires, recheck new-key possession and perform exactly the stored add/replace operation.
+It has exactly one independent ERC-7913 signer. This is a deliberate simplification: the first implementation solves identity binding and signer replacement rather than embedding a general multisignature policy.
 
-An existing account signer can cancel during the delay. Cancellation does not restore the nonce, so the cancelled authorization cannot be replayed. An expired request cannot finalize and is automatically cleared when a newer authorized recovery is scheduled. The manager cannot transfer funds, call arbitrary account targets, change account threshold, or enable recovery after the account disables it. The reference environment template uses a seven-day delay and a seven-day execution window; production policy should normally evaluate a 7–14 day delay.
+Routine execution has two paths:
 
-### 3.5 ProviderKeyRegistry
+```solidity
+execute(address target, uint256 value, bytes data)
+```
 
-Verifier services fetch Google/Apple JSON Web Key Sets (JWKS). A JWKS is a provider-published list of current public signing keys. The registry records canonical public JWK material, key identifiers, validity windows, and emergency revocation.
+A 20-byte installed Ethereum-address signer may call directly.
 
-The attestation names the SHA-256 thumbprint of the exact provider key that signed the ID token. On-chain verification accepts it only inside the recorded validity window and while not emergency-revoked. Rotation is handled by publishing a new key before or alongside activation, retaining the old key for a short overlap, then retiring it. An unknown `kid` causes each off-chain verifier to refresh JWKS once rather than blindly accepting or permanently caching failure.
+```solidity
+executeSigned(
+    address target,
+    uint256 value,
+    bytes data,
+    uint256 nonce,
+    uint64 deadline,
+    bytes signature
+)
+```
 
-The registry is a transparency and policy boundary, not an on-chain JWT verifier. The attestor threshold still asserts that the named key actually validated the token.
+Any sender may relay an EIP-712 authorization from the installed ERC-7913 signer. The signature binds target, value, calldata hash, sequential execution nonce, deadline, chain, and exact account. Nonce consumption and the target call are atomic: a reverted target call rolls the entire transaction back.
 
-### 3.6 OIDC verifier services
+The current signer can rotate normally. Address-less signers do so through a signed self-call. Only the immutable identity controller may call `replaceSignerFromIdentity`, and it must provide the exact current signer hash. The account can permanently disable identity recovery.
 
-Each independent service:
+### 3.3 `OIDCAccountFactory`
 
-1. accepts an exact action request;
-2. derives the OIDC `nonce` from that request;
-3. starts Authorization Code flow with PKCE and a random `state` value;
-4. exchanges the one-time code server-side;
-5. accepts only an ID token, never an access token, as identity evidence;
-6. validates signature, exact issuer, exact audience, fixed algorithm, nonce, issue/expiry/authentication time, and provider key;
-7. checks the opaque account identity binding;
-8. renders a confirmation page on the verifier's own origin;
-9. requires the user to type the displayed key-fingerprint suffix;
-10. signs the exact short-lived common intent plus its own provider-key and token-issuance evidence once.
+The factory performs OIDC-gated account creation. The `CreateAccount` digest binds:
 
-PKCE, or Proof Key for Code Exchange, binds the authorization request to the code exchange and makes a stolen authorization code less useful. `state` binds the browser callback to the initiating session. Neither replaces the typed action binding.
+- predicted account address;
+- CREATE2 deployment salt;
+- provider policy;
+- identity commitment;
+- complete initial-signer hash;
+- validity interval;
+- chain ID and exact factory through the EIP-712 domain.
 
-## 4. User-intent design
+Creation succeeds only when:
 
-Authentication and intent are separate facts.
+1. the request recomputes to the exact predicted address;
+2. the complete supplied signer hashes to the request's signer hash;
+3. the configured claim verifier returns the same policy, identity, and digest nonce;
+4. the claim is issued, unexpired, and no older than `maxClaimAge`;
+5. the new signer proves possession by signing the same digest.
 
-A provider login answers: “Did Google or Apple authenticate this provider account for this OIDC client?” It does not answer: “Did the person understand that key X will control account Y on chain Z?”
+The factory keeps no replay mapping. CREATE2 itself prevents the exact deployment from being repeated. A third party may front-run the same creation, but deploys the same code, identity, controller, and signer.
 
-The design therefore uses several independent checks:
+Because the identity commitment is part of the create digest, first enrollment needs the stable provider subject before the action-bound authorization begins. A product can use an existing authenticated session or perform a discovery login followed by a second action-bound authorization. Treating the discovery token as creation approval would remove the exact-intent guarantee. The identity salt is operational recovery material: the client or selected proof adapter must keep it recoverable without publishing the raw subject.
 
-- the OIDC nonce is derived from all action-changing fields, preventing a token for one action from being substituted into another;
-- the attestation signs exact typed fields, not an ambiguous text blob;
-- a verifier-owned confirmation page independently displays the action, chain, account, controller, verifying contract, provider policy, identity commitment, intent and recovery nonces, full signer encoding and fingerprint, current signer state, validity window, attestor epoch, and recovery delay;
-- typed fingerprint confirmation requires a small amount of active user attention;
-- the new key proves possession of the same intent;
-- recovery waits on-chain and can be cancelled by an existing signer;
-- production monitoring must notify the user through a channel independent of the initiating frontend.
+### 3.4 `OIDCRecoveryController`
 
-This reduces substitution and inattentive approval risk. It cannot cryptographically prove comprehension. A user can still approve a malicious but accurately displayed recovery, and a compromised confirmation origin can lie. High-value deployments should add a second factor or guardian independent of the identity provider.
+Recovery is replacement-only and has two phases.
 
-## 5. Availability property
+**Schedule** verifies:
 
-Google, Apple, verifier services, their databases, and the provider-key publication process may all become unavailable. In that state:
+- exact account/controller wiring;
+- recovery is enabled;
+- request nonce equals the account's current controller nonce;
+- expected signer hash equals current signer state;
+- complete new-signer encoding and proof of possession;
+- request validity interval;
+- matching, current normalized OIDC claim.
 
-- existing account signers still validate and execute ordinary operations;
-- existing signers still manage the signer set through ordinary account operations;
-- funds are not frozen by OIDC downtime;
-- only new OIDC-assisted creation and recovery are unavailable.
+It increments the recovery nonce immediately and stores only the exact pending replacement. Cancellation does not restore the nonce.
 
-The underlying chain and an ordinary transaction sender remain operational dependencies. The sender may be the installed address signer or any chosen relayer; no specialized protocol contract is required.
+**Finalize** is permissionless after the immutable delay and through the end of the immutable execution window. It rechecks the expected signer through `OIDCAccount`, so normal signer rotation makes stale recovery fail. Expired pending recovery cannot finalize and does not block a newer request.
 
-## 6. Governance and upgrades
+The current signer cancels by making the account itself call `cancel(account)`, directly or through signed self-execution.
 
-The account, factory, verifier, recovery manager, and provider registry are deliberately non-upgradeable.
+## 4. Google and Apple policy
 
-Attestor-set rotation, provider-key publication/revocation, and recovery-verifier allowlisting are administrative functions. In production, ownership must be transferred to a separately deployed, audited timelock controlled by a geographically and organizationally diverse multisignature. The reference project does not pretend that an externally owned deployment key is production-safe.
+The initial helpers optimize the shared core for two providers without pretending their complete validation rules are identical.
 
-A malicious governance authority can cause denial of recovery and, by replacing the attestor set, can eventually authorize signer changes after the recovery delay. Users can permanently disable recovery, but should do so only after establishing another tested recovery method.
+### Google
 
-## 7. Standards and prior systems
+A concrete adapter must check at least:
 
-Primary references:
+- issuer is `https://accounts.google.com` or the documented equivalent `accounts.google.com`, normalized canonically;
+- exact configured client ID appears in `aud`;
+- `azp` equals the client ID when multiple audiences appear, and any supplied `azp` is correct;
+- fixed acceptable signature algorithm and current Google verification key;
+- non-empty stable `sub`;
+- exact action-bound `nonce`;
+- token issue and expiry times;
+- any required authentication-age policy for the selected login flow.
 
-- OpenID Connect Core 1.0, including ID-token validation and nonce requirements: https://openid.net/specs/openid-connect-core-1_0.html
+### Apple
+
+A concrete adapter must check at least:
+
+- issuer is exactly `https://appleid.apple.com`;
+- exact Service ID or bundle/client ID in `aud`;
+- fixed acceptable signature algorithm and current Apple verification key;
+- stable `sub`, not email or private-relay email;
+- exact action-bound `nonce`;
+- token issue and expiry times;
+- Apple-specific account-transfer subject migration where operationally required.
+
+Apple can provide a transfer subject when an application changes developer teams. Identity migration is intentionally not implemented in this minimal account protocol; a production adapter and account migration design must address that lifecycle before such a transfer.
+
+## 5. Replay and timing model
+
+There is no general token-hash replay registry.
+
+- Creation replay is stopped by the exact counterfactual address and CREATE2 deployment.
+- Recovery replay is stopped by the monotonically increasing per-account recovery nonce, including after cancellation.
+- Routine execution replay is stopped by the account execution nonce.
+- Cross-chain and cross-contract replay are stopped by EIP-712 domains.
+- Token reuse for a different action fails because its authenticated `nonce` is a different action digest.
+- Claim issue time, expiry, and maximum age prevent an old proof from scheduling a current action.
+
+This keeps replay state where the state transition occurs instead of inside the proof adapter.
+
+## 6. Immutability and availability
+
+Accounts, factory, and controller are not proxies. The account's controller and identity binding cannot be changed.
+
+This gives a clear trust boundary but creates an availability trade-off: if the selected verifier becomes permanently unavailable, OIDC recovery for those accounts cannot be migrated. Installed signers still execute and rotate normally, and can permanently disable the dead recovery path. Production deployments should choose verifier lifecycle and migration strategy before funding accounts.
+
+## 7. Privacy
+
+The core stores only opaque hashes and does not parse or log raw OIDC fields. It cannot guarantee proof privacy:
+
+- a direct JWT adapter exposes the token and subject in public calldata;
+- an oracle-backed registry may expose only a claim commitment;
+- a zero-knowledge adapter may hide the subject and token.
+
+The selected proof adapter therefore controls part of the privacy model. Identity salts should not be confused with the public CREATE2 deployment salt, and raw ID tokens should never be treated as permanent identity records.
+
+## 8. Deliberate omissions
+
+- no direct Google/Apple JWT verifier;
+- no provider-key or JWKS registry;
+- no attestor set, quorum, epoch, or signatures;
+- no generic oracle protocol;
+- no identity-update or provider-migration action;
+- no OIDC signer addition;
+- no multiple installed signer policy;
+- no ERC-4337 transaction infrastructure;
+- no proxy upgrades or governance authority.
+
+Each omitted feature can be added only when its threat and operational owner are concrete.
+
+## 9. References
+
+- OpenID Connect Core 1.0: https://openid.net/specs/openid-connect-core-1_0.html
 - OAuth 2.0 Security Best Current Practice, RFC 9700: https://www.rfc-editor.org/rfc/rfc9700.html
 - JWT Best Current Practices, RFC 8725: https://www.rfc-editor.org/rfc/rfc8725.html
-- JWK thumbprints, RFC 7638: https://www.rfc-editor.org/rfc/rfc7638.html
-- Google OpenID Connect documentation: https://developers.google.com/identity/openid-connect/openid-connect
-- Apple Sign in verification: https://developer.apple.com/documentation/signinwithapple/verifying-a-user
-- EIP-712 typed structured data: https://eips.ethereum.org/EIPS/eip-712
-- ERC-1271 contract signatures: https://eips.ethereum.org/EIPS/eip-1271
-- ERC-7913 signature verifiers: https://eips.ethereum.org/EIPS/eip-7913
-- W3C WebAuthn Level 3: https://www.w3.org/TR/webauthn-3/
-- Sui zkLogin as a privacy-preserving comparison: https://docs.sui.io/concepts/cryptography/zklogin
-- Safe social recovery/module background: https://docs.safe.global/learn/safe-core/safe-core-protocol/social-recovery-module
+- Google OpenID Connect: https://developers.google.com/identity/openid-connect/openid-connect
+- Sign in with Apple: https://developer.apple.com/sign-in-with-apple/
+- EIP-712: https://eips.ethereum.org/EIPS/eip-712
+- ERC-1271: https://eips.ethereum.org/EIPS/eip-1271
+- ERC-7913: https://eips.ethereum.org/EIPS/eip-7913
+- WebAuthn: https://www.w3.org/TR/webauthn-3/

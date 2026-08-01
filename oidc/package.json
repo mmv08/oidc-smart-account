@@ -1,21 +1,16 @@
 {
-  "name": "oidc-smart-account-verifier",
-  "version": "0.1.0",
+  "name": "oidc-onchain-identity-model",
+  "version": "0.2.0",
   "private": true,
   "type": "module",
   "engines": { "node": ">=24" },
   "scripts": {
     "test": "tsx --test --test-concurrency=1 test/**/*.test.ts",
     "typecheck": "tsc --noEmit",
-    "build": "tsc",
-    "dev": "tsx src/server.ts",
-    "start": "node dist/src/server.js"
+    "build": "tsc"
   },
   "dependencies": {
-    "fastify": "5.11.0",
-    "jose": "6.2.6",
-    "viem": "2.55.10",
-    "zod": "4.4.3"
+    "viem": "2.55.10"
   },
   "devDependencies": {
     "@types/node": "26.1.2",

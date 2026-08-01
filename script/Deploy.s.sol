@@ -5,59 +5,37 @@ import { Script, console2 } from "forge-std/Script.sol";
 import {
     ERC7913WebAuthnVerifier
 } from "@openzeppelin/contracts/utils/cryptography/verifiers/ERC7913WebAuthnVerifier.sol";
-import { ProviderKeyRegistry } from "../src/ProviderKeyRegistry.sol";
-import { IdentityIntentVerifier } from "../src/IdentityIntentVerifier.sol";
-import { IdentityRecoveryManager } from "../src/IdentityRecoveryManager.sol";
-import { IdentityAccountFactory } from "../src/IdentityAccountFactory.sol";
+import { IOIDCClaimVerifier } from "../src/IOIDCClaimVerifier.sol";
+import { OIDCRecoveryController } from "../src/OIDCRecoveryController.sol";
+import { OIDCAccountFactory } from "../src/OIDCAccountFactory.sol";
 
-/// @notice Deploys the non-upgradeable reference contracts and starts two-step governance transfer.
-/// @dev GOVERNANCE_OWNER should be an audited timelock in production. It must call acceptOwnership on
-///      ProviderKeyRegistry, IdentityIntentVerifier, and IdentityRecoveryManager after deployment.
+/// @notice Deploys the immutable on-chain identity protocol around an existing OIDC proof verifier.
+/// @dev The verifier address is an explicit trust boundary. Its implementation is outside this project.
 contract Deploy is Script {
     function run()
         external
         returns (
-            ProviderKeyRegistry registry,
-            IdentityIntentVerifier intentVerifier,
-            IdentityRecoveryManager recoveryManager,
-            IdentityAccountFactory factory,
+            OIDCRecoveryController controller,
+            OIDCAccountFactory factory,
             ERC7913WebAuthnVerifier webAuthnVerifier
         )
     {
         uint256 deployerKey = vm.envUint("DEPLOYER_PRIVATE_KEY");
-        address deployer = vm.addr(deployerKey);
-        address governanceOwner = vm.envAddress("GOVERNANCE_OWNER");
-        address[] memory attestors = vm.envAddress("ATTESTORS", ",");
-        uint8 threshold = uint8(vm.envUint("ATTESTOR_THRESHOLD"));
-        uint64 maxAttestationTTL = uint64(vm.envUint("MAX_ATTESTATION_TTL"));
+        IOIDCClaimVerifier claimVerifier = IOIDCClaimVerifier(vm.envAddress("OIDC_CLAIM_VERIFIER"));
         uint64 recoveryDelay = uint64(vm.envUint("RECOVERY_DELAY"));
         uint64 recoveryWindow = uint64(vm.envUint("RECOVERY_WINDOW"));
+        uint64 maxClaimAge = uint64(vm.envUint("MAX_CLAIM_AGE"));
 
         vm.startBroadcast(deployerKey);
-        registry = new ProviderKeyRegistry(deployer);
-        intentVerifier = new IdentityIntentVerifier(
-            registry, attestors, threshold, maxAttestationTTL, deployer
-        );
-        recoveryManager =
-            new IdentityRecoveryManager(intentVerifier, recoveryDelay, recoveryWindow, deployer);
+        controller =
+            new OIDCRecoveryController(claimVerifier, recoveryDelay, recoveryWindow, maxClaimAge);
+        factory = new OIDCAccountFactory(controller);
         webAuthnVerifier = new ERC7913WebAuthnVerifier();
-        recoveryManager.setSignerVerifierPolicy(address(webAuthnVerifier), true);
-        factory = new IdentityAccountFactory(recoveryManager, intentVerifier);
-
-        if (governanceOwner != deployer) {
-            registry.transferOwnership(governanceOwner);
-            intentVerifier.transferOwnership(governanceOwner);
-            recoveryManager.transferOwnership(governanceOwner);
-        }
         vm.stopBroadcast();
 
-        console2.log("ProviderKeyRegistry", address(registry));
-        console2.log("IdentityIntentVerifier", address(intentVerifier));
-        console2.log("IdentityRecoveryManager", address(recoveryManager));
-        console2.log("IdentityAccountFactory", address(factory));
+        console2.log("OIDCClaimVerifier", address(claimVerifier));
+        console2.log("OIDCRecoveryController", address(controller));
+        console2.log("OIDCAccountFactory", address(factory));
         console2.log("ERC7913WebAuthnVerifier", address(webAuthnVerifier));
-        if (governanceOwner != deployer) {
-            console2.log("Pending governance owner (must accept ownership)", governanceOwner);
-        }
     }
 }
