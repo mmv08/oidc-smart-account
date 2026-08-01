@@ -1,0 +1,10 @@
+out/
+cache/
+broadcast/
+coverage/
+.env
+.env.*
+!.env.example
+node_modules/
+verifier/dist/
+.DS_Store
