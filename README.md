@@ -6,7 +6,7 @@ A reference implementation in which a familiar Google or Apple identity can esta
 
 ## What this project does
 
-- Creates a deterministic ERC-4337 smart account after a threshold of independent services verify a Google or Apple OpenID Connect login.
+- Creates a deterministic smart account after a threshold of independent services verify a Google or Apple OpenID Connect login.
 - Installs an independent ERC-7913-formatted signer as the account's real transaction authority.
 - Supports ECDSA addresses, ERC-1271 contract signers, P-256/WebAuthn passkeys through compatible verifier contracts, and future verifier/key formats.
 - Allows OIDC-assisted signer addition or replacement only through a delayed, cancellable recovery path.
@@ -26,7 +26,7 @@ A reference implementation in which a familiar Google or Apple identity can esta
 
 - `src/ProviderKeyRegistry.sol` — provider-key transparency, rotation windows, and emergency revocation.
 - `src/IdentityIntentVerifier.sol` — EIP-712 typed intent and threshold attestor verification.
-- `src/IndependentKeyAccount.sol` — ERC-4337 account controlled by independent ERC-7913 signers.
+- `src/IndependentKeyAccount.sol` — direct and relayed execution controlled by independent ERC-7913 signers.
 - `src/IdentityRecoveryManager.sol` — delayed/cancellable ADD or REPLACE signer recovery.
 - `src/IdentityAccountFactory.sol` — CREATE2 account bootstrap bound to exact signer and account.
 - `test/` — Foundry unit, fuzz, replay, cross-chain, timing, and adversarial tests.
@@ -76,7 +76,9 @@ The OIDC tests use a local mock issuer and generated RSA keys. Real Google/Apple
 
 ### Normal operation
 
-The account validates ERC-4337 user operations using installed ERC-7913 cryptographic signers. No OIDC component is called.
+An installed 20-byte address signer can call `execute` directly. Passkeys and other address-less ERC-7913 signers authorize `executeSigned`; any ordinary transaction sender can relay it, but cannot change its signed target, value, calldata hash, account, chain, nonce, or deadline. The account consumes its execution nonce atomically before the external call. Signer management by an address-less key uses an authorized signed self-call. No OIDC component or specialized transaction infrastructure is called.
+
+The relayed signature uses EIP-712 domain name `IndependentKeyAccount`, version `1`, the live chain ID, and the exact account as `verifyingContract`. Its struct is `Execution(address target,uint256 value,bytes32 dataHash,uint256 nonce,uint64 deadline)`. `signature` uses the OpenZeppelin ERC-7913 multisigner encoding `abi.encode(bytes[] signers, bytes[] signatures)`. A reverted target call rolls the nonce back with the transaction, so the exact request can be retried until its deadline.
 
 ### Recovery
 
@@ -99,7 +101,7 @@ Before production use, at minimum:
 - durable transactional identity/challenge storage with encrypted backups;
 - HTTPS, hardened cookies, CSRF protection, rate limiting, anti-automation controls, and strict logging redaction;
 - independent recovery notifications and monitoring;
-- target-chain ERC-4337 and P-256/WebAuthn compatibility testing;
+- target-chain direct-execution, relayer, and P-256/WebAuthn compatibility testing;
 - operational exercises for provider key rotation, verifier loss, governance compromise, cancellation, and account recovery.
 
 See [architecture](docs/ARCHITECTURE.md) and [threat model](docs/THREAT_MODEL.md) for the complete reasoning and limitations.

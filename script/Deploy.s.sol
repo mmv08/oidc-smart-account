@@ -27,7 +27,6 @@ contract Deploy is Script {
         uint256 deployerKey = vm.envUint("DEPLOYER_PRIVATE_KEY");
         address deployer = vm.addr(deployerKey);
         address governanceOwner = vm.envAddress("GOVERNANCE_OWNER");
-        address entryPoint = vm.envAddress("ENTRY_POINT");
         address[] memory attestors = vm.envAddress("ATTESTORS", ",");
         uint8 threshold = uint8(vm.envUint("ATTESTOR_THRESHOLD"));
         uint64 maxAttestationTTL = uint64(vm.envUint("MAX_ATTESTATION_TTL"));
@@ -43,7 +42,7 @@ contract Deploy is Script {
             new IdentityRecoveryManager(intentVerifier, recoveryDelay, recoveryWindow, deployer);
         webAuthnVerifier = new ERC7913WebAuthnVerifier();
         recoveryManager.setSignerVerifierPolicy(address(webAuthnVerifier), true);
-        factory = new IdentityAccountFactory(entryPoint, recoveryManager, intentVerifier);
+        factory = new IdentityAccountFactory(recoveryManager, intentVerifier);
 
         if (governanceOwner != deployer) {
             registry.transferOwnership(governanceOwner);

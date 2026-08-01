@@ -9,18 +9,6 @@ import { IdentityIntentVerifier } from "../src/IdentityIntentVerifier.sol";
 import { IndependentKeyAccount } from "../src/IndependentKeyAccount.sol";
 import { IdentityRecoveryManager } from "../src/IdentityRecoveryManager.sol";
 
-contract RecoveryEntryPoint {
-    function getNonce(address, uint192) external pure returns (uint256) {
-        return 0;
-    }
-
-    function callAccount(address account, bytes calldata data) external returns (bytes memory) {
-        (bool ok, bytes memory result) = account.call(data);
-        if (!ok) assembly ("memory-safe") { revert(add(result, 32), mload(result)) }
-        return result;
-    }
-}
-
 contract TestERC7913Verifier is IERC7913SignatureVerifier {
     function verify(bytes calldata key, bytes32 hash, bytes calldata signature)
         external
@@ -59,7 +47,6 @@ contract IdentityRecoveryManagerTest is Test {
     IdentityIntentVerifier internal verifier;
     IdentityRecoveryManager internal manager;
     IndependentKeyAccount internal account;
-    RecoveryEntryPoint internal entryPoint;
 
     function setUp() public {
         vm.warp(10_000);
@@ -75,12 +62,8 @@ contract IdentityRecoveryManagerTest is Test {
         }
         verifier = new IdentityIntentVerifier(registry, attestors, 2, 1 hours, address(this));
         manager = new IdentityRecoveryManager(verifier, 2 days, 7 days, address(this));
-        entryPoint = new RecoveryEntryPoint();
         account = new IndependentKeyAccount(
-            address(entryPoint),
-            address(manager),
-            keccak256("identity"),
-            abi.encodePacked(vm.addr(oldPk))
+            address(manager), keccak256("identity"), abi.encodePacked(vm.addr(oldPk))
         );
     }
 
@@ -170,16 +153,9 @@ contract IdentityRecoveryManagerTest is Test {
         bytes memory pop = _sign(newPk, digest);
         bytes[] memory attestations = _attest(digest);
         manager.schedule(address(account), bytes(""), newSigner, pop, intent, attestations);
-        entryPoint.callAccount(
-            address(account),
-            abi.encodeCall(
-                IndependentKeyAccount.execute,
-                (
-                    address(manager),
-                    0,
-                    abi.encodeCall(IdentityRecoveryManager.cancel, (address(account)))
-                )
-            )
+        vm.prank(vm.addr(oldPk));
+        account.execute(
+            address(manager), 0, abi.encodeCall(IdentityRecoveryManager.cancel, (address(account)))
         );
         assertEq(manager.getPending(address(account)).executeAfter, 0);
         assertEq(manager.recoveryNonces(address(account)), 1);
@@ -293,9 +269,8 @@ contract IdentityRecoveryManagerTest is Test {
     }
 
     function test_permanentlyDisabledRecoveryCannotSchedule() public {
-        entryPoint.callAccount(
-            address(account), abi.encodeCall(IndependentKeyAccount.disableRecovery, ())
-        );
+        vm.prank(vm.addr(oldPk));
+        account.disableRecovery();
         bytes memory newSigner = abi.encodePacked(vm.addr(newPk));
         IdentityIntentVerifier.Intent memory intent = _intent(newSigner);
         bytes32 digest = verifier.hashIntent(intent);

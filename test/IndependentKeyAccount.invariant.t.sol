@@ -4,48 +4,31 @@ pragma solidity ^0.8.36;
 import { Test } from "forge-std/Test.sol";
 import { IndependentKeyAccount } from "../src/IndependentKeyAccount.sol";
 
-contract InvariantEntryPoint {
-    function getNonce(address, uint192) external pure returns (uint256) {
-        return 0;
-    }
-
-    function callAccount(address account, bytes calldata data) external returns (bytes memory) {
-        (bool ok, bytes memory result) = account.call(data);
-        if (!ok) {
-            assembly ("memory-safe") {
-                revert(add(result, 32), mload(result))
-            }
-        }
-        return result;
-    }
-}
-
-contract AccountSignerHandler {
-    InvariantEntryPoint internal immutable entryPoint;
+contract AccountSignerHandler is Test {
     IndependentKeyAccount internal immutable account;
+    address internal immutable owner;
+    bytes32 internal immutable ownerSignerHash;
 
-    constructor(InvariantEntryPoint entryPoint_, IndependentKeyAccount account_) {
-        entryPoint = entryPoint_;
+    constructor(IndependentKeyAccount account_, address owner_) {
         account = account_;
+        owner = owner_;
+        ownerSignerHash = keccak256(abi.encodePacked(owner_));
     }
 
     function addSigner(uint160 rawSigner) external {
-        if (rawSigner <= 0xff) return;
+        if (rawSigner <= 0xff || address(rawSigner) == address(account)) return;
         bytes memory signer = abi.encodePacked(address(rawSigner));
-        try entryPoint.callAccount(
-            address(account), abi.encodeCall(IndependentKeyAccount.addSigner, (signer))
-        ) { }
-            catch { }
+        vm.prank(owner);
+        try account.addSigner(signer) { } catch { }
     }
 
     function removeSigner(uint256 seed) external {
         bytes[] memory signers = account.getSigners(0, type(uint64).max);
         if (signers.length <= 1) return;
         bytes memory signer = signers[seed % signers.length];
-        try entryPoint.callAccount(
-            address(account), abi.encodeCall(IndependentKeyAccount.removeSigner, (signer))
-        ) { }
-            catch { }
+        if (keccak256(signer) == ownerSignerHash) return;
+        vm.prank(owner);
+        try account.removeSigner(signer) { } catch { }
     }
 }
 
@@ -53,14 +36,11 @@ contract IndependentKeyAccountInvariantTest is Test {
     IndependentKeyAccount internal account;
 
     function setUp() public {
-        InvariantEntryPoint entryPoint = new InvariantEntryPoint();
+        address owner = address(0xBEEF);
         account = new IndependentKeyAccount(
-            address(entryPoint),
-            address(0xDEAD),
-            keccak256("opaque-invariant-identity"),
-            abi.encodePacked(address(0xBEEF))
+            address(0xDEAD), keccak256("opaque-invariant-identity"), abi.encodePacked(owner)
         );
-        targetContract(address(new AccountSignerHandler(entryPoint, account)));
+        targetContract(address(new AccountSignerHandler(account, owner)));
     }
 
     function invariant_signerThresholdIsAlwaysOneAndReachable() public view {

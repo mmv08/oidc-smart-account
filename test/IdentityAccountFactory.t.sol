@@ -8,12 +8,6 @@ import { IdentityRecoveryManager } from "../src/IdentityRecoveryManager.sol";
 import { IdentityAccountFactory } from "../src/IdentityAccountFactory.sol";
 import { IndependentKeyAccount } from "../src/IndependentKeyAccount.sol";
 
-contract FactoryEntryPoint {
-    function getNonce(address, uint192) external pure returns (uint256) {
-        return 0;
-    }
-}
-
 contract IdentityAccountFactoryTest is Test {
     uint256 internal a1 = 0xA11CE;
     uint256 internal a2 = 0xB0B;
@@ -23,11 +17,9 @@ contract IdentityAccountFactoryTest is Test {
     IdentityIntentVerifier internal verifier;
     IdentityRecoveryManager internal manager;
     IdentityAccountFactory internal factory;
-    FactoryEntryPoint internal ep;
 
     function setUp() public {
         vm.warp(50_000);
-        ep = new FactoryEntryPoint();
         ProviderKeyRegistry registry = new ProviderKeyRegistry(address(this));
         registry.registerProvider(provider);
         keyHash = registry.publishKey(provider, keccak256("kid"), bytes("jwk"), 40_000, 60_000);
@@ -37,7 +29,7 @@ contract IdentityAccountFactoryTest is Test {
         if (aa[0] > aa[1]) (aa[0], aa[1]) = (aa[1], aa[0]);
         verifier = new IdentityIntentVerifier(registry, aa, 2, 1 hours, address(this));
         manager = new IdentityRecoveryManager(verifier, 1 days, 7 days, address(this));
-        factory = new IdentityAccountFactory(address(ep), manager, verifier);
+        factory = new IdentityAccountFactory(manager, verifier);
     }
 
     function _sign(uint256 pk, bytes32 digest) internal returns (bytes memory) {

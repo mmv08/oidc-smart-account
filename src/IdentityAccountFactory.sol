@@ -12,7 +12,6 @@ import { IndependentKeyAccount } from "./IndependentKeyAccount.sol";
 contract IdentityAccountFactory is ReentrancyGuard {
     using SignatureChecker for bytes;
 
-    address public immutable entryPoint;
     IdentityRecoveryManager public immutable recoveryManager;
     IdentityIntentVerifier public immutable verifier;
 
@@ -28,19 +27,13 @@ contract IdentityAccountFactory is ReentrancyGuard {
     error InvalidInitialSigner(bytes signer);
     error InvalidProofOfPossession();
 
-    constructor(
-        address entryPoint_,
-        IdentityRecoveryManager recoveryManager_,
-        IdentityIntentVerifier verifier_
-    ) {
+    constructor(IdentityRecoveryManager recoveryManager_, IdentityIntentVerifier verifier_) {
         if (
-            entryPoint_ == address(0) || address(recoveryManager_) == address(0)
-                || address(verifier_) == address(0)
+            address(recoveryManager_) == address(0) || address(verifier_) == address(0)
                 || address(recoveryManager_.verifier()) != address(verifier_)
         ) {
             revert InvalidConfiguration();
         }
-        entryPoint = entryPoint_;
         recoveryManager = recoveryManager_;
         verifier = verifier_;
     }
@@ -53,7 +46,7 @@ contract IdentityAccountFactory is ReentrancyGuard {
         bytes32 initCodeHash = keccak256(
             abi.encodePacked(
                 type(IndependentKeyAccount).creationCode,
-                abi.encode(entryPoint, address(recoveryManager), identityCommitment, initialSigner)
+                abi.encode(address(recoveryManager), identityCommitment, initialSigner)
             )
         );
         return address(
@@ -90,7 +83,7 @@ contract IdentityAccountFactory is ReentrancyGuard {
         if (verifier.consume(intent, attestations) != digest) revert InvalidCreateIntent();
 
         account = new IndependentKeyAccount{ salt: salt }(
-            entryPoint, address(recoveryManager), identityCommitment, initialSigner
+            address(recoveryManager), identityCommitment, initialSigner
         );
         if (address(account) != predicted) revert InvalidCreateIntent();
         emit AccountCreated(address(account), identityCommitment, keccak256(initialSigner), digest);

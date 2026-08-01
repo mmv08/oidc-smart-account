@@ -14,7 +14,7 @@
 The design considers:
 
 - a network observer or transaction-ordering attacker who copies pending transactions;
-- a malicious relayer or bundler;
+- a malicious relayer;
 - a malicious or compromised application frontend;
 - theft of an OIDC authorization code or ID token;
 - compromise of a Google/Apple account or the provider itself;
@@ -64,9 +64,9 @@ Installed signers are root transaction authority. Compromise of any signer is ac
 
 Administrative power rotates attestors, publishes/revokes provider keys, and approves address-less recovery verifier contracts. Production governance must be a delayed multisignature. A threshold governance compromise can eventually subvert recovery. It cannot directly sign an ordinary account operation unless it first succeeds through the constrained recovery path.
 
-### ERC-4337 EntryPoint and chain
+### Execution relayers and chain
 
-Trusted as account-execution infrastructure. The account pins a configured EntryPoint. Chain consensus failures, same-chain-ID forks, or EntryPoint bugs are outside OIDC recovery's protection.
+Relayers are untrusted and optional. They can withhold, copy, reorder, or submit signed executions, but cannot alter the signed target, value, calldata hash, nonce, deadline, chain, or account. Chain consensus failures and same-chain-ID forks are outside OIDC recovery's protection.
 
 ## 4. Required security invariants
 
@@ -82,6 +82,7 @@ Trusted as account-execution infrastructure. The account pins a configured Entry
 10. Recovery disabled by the account cannot be re-enabled by recovery or governance.
 11. Pending recovery expires after a bounded execution window; an expired request cannot finalize or permanently block a newer recovery.
 12. Independent attestors may use different valid provider keys and token issuance times, but cannot alter the common action or validity window.
+13. A successful signed execution consumes the exact account execution nonce; signatures cannot replay across accounts or chains.
 
 ## 5. Attack analysis
 
@@ -100,6 +101,9 @@ Trusted as account-execution infrastructure. The account pins a configured Entry
 | One malicious attestor | Does not reach the intended 2-of-3 threshold. |
 | Malicious frontend | Independent confirmation origin exposes exact action; key proof/delay prevent silent substitution, but social engineering remains. |
 | OIDC outage | Creation/recovery stop; installed signers continue ordinary operation. |
+| Relayer changes call data/value/target | EIP-712 execution signature rejects it. |
+| Replay signed execution | Account execution nonce rejects it; the domain prevents cross-account and cross-chain replay. |
+| Relayer withholds signed execution | The signer can use another relayer; the signature expires at its deadline. |
 | Governance instant takeover | Production timelock gives monitoring/cancellation time; reference deployment without timelock is not production-ready. |
 
 ## 6. Privacy
@@ -123,7 +127,7 @@ They do not receive the ID token, authorization code, provider subject, email, n
 - Production needs HTTPS, hardened cookies, CSRF protection, rate limits, anti-automation controls, encrypted durable storage, secret-management hardware, independent monitoring, and notification channels.
 - Provider OAuth client registration loss or audience changes can break identity recovery.
 - Same-chain-ID contentious forks may allow the same pre-fork authorization/state on both branches.
-- ERC-4337 EntryPoint/bundler compatibility, gas griefing, and chain-specific P-256 behavior require target-chain testing.
+- Direct execution, relayer gas griefing, and chain-specific P-256 behavior require target-chain testing.
 - Address-less verifier contracts, especially proxies, require audit and code-hash policy; an always-valid verifier destroys key proof.
 - The reference threshold-one account means any installed signer has full authority.
 - Governance must be transferred to an audited delayed multisignature before value is deposited.

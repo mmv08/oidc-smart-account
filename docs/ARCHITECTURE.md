@@ -52,13 +52,16 @@ A zero-knowledge proof can prove selected JWT claims without exposing the token.
 
 ### 3.1 IndependentKeyAccount
 
-The account uses OpenZeppelin's ERC-4337 account base and ERC-7913 multisigner support. ERC-4337 is Ethereum's account-abstraction standard: an EntryPoint contract validates and executes signed user operations for smart accounts.
+The account uses OpenZeppelin's ERC-7913 multisigner support with two small execution paths. A 20-byte address signer can submit `execute` directly. An address-less signer, such as a passkey, signs an EIP-712 `Execution` request that any untrusted relayer can submit through `executeSigned`.
 
 Properties:
 
 - ordinary operations validate only installed cryptographic signers;
+- signed executions bind target, value, calldata hash, execution nonce, deadline, chain, and exact account deployment;
+- the execution nonce is consumed atomically with the external call, preventing successful replay while allowing a reverted call to be retried until its deadline;
 - signer threshold is one in this deliberately small design;
-- existing signers can add or remove signers through an ordinary account operation;
+- address signers can manage signers directly, while address-less signers use an authorized signed self-call;
+- relayers are optional, untrusted transports and receive no account authority;
 - OIDC contracts are not called during ordinary validation or execution;
 - the recovery manager can only add or replace a signer;
 - the account can permanently disable OIDC recovery;
@@ -146,7 +149,7 @@ Google, Apple, verifier services, their databases, and the provider-key publicat
 - funds are not frozen by OIDC downtime;
 - only new OIDC-assisted creation and recovery are unavailable.
 
-The configured ERC-4337 EntryPoint and the underlying chain remain operational dependencies for ERC-4337 execution.
+The underlying chain and an ordinary transaction sender remain operational dependencies. The sender may be the installed address signer or any chosen relayer; no specialized protocol contract is required.
 
 ## 6. Governance and upgrades
 
@@ -168,7 +171,6 @@ Primary references:
 - Apple Sign in verification: https://developer.apple.com/documentation/signinwithapple/verifying-a-user
 - EIP-712 typed structured data: https://eips.ethereum.org/EIPS/eip-712
 - ERC-1271 contract signatures: https://eips.ethereum.org/EIPS/eip-1271
-- ERC-4337 account abstraction: https://eips.ethereum.org/EIPS/eip-4337
 - ERC-7913 signature verifiers: https://eips.ethereum.org/EIPS/eip-7913
 - W3C WebAuthn Level 3: https://www.w3.org/TR/webauthn-3/
 - Sui zkLogin as a privacy-preserving comparison: https://docs.sui.io/concepts/cryptography/zklogin
