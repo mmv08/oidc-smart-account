@@ -7,11 +7,21 @@ import { ReentrancyGuard } from "@openzeppelin/contracts/utils/ReentrancyGuard.s
 import { IOIDCClaimVerifier } from "./IOIDCClaimVerifier.sol";
 import { OIDCAccount } from "./OIDCAccount.sol";
 
-/// @notice Delayed signer recovery driven by a normalized, action-bound OIDC claim.
-/// @dev The proof verifier is deliberately abstract. This contract never parses JWTs or trusts oracle-specific data.
+/// @title OIDC Recovery Controller
+/// @notice Schedules delayed signer replacement authorized by an OIDC claim and the replacement signer.
+/// @dev The claim nonce must equal the EIP-712 recovery digest. The controller stores no provider-specific
+/// data; it relies on `claimVerifier` and compares the normalized result with immutable account state.
 contract OIDCRecoveryController is EIP712, ReentrancyGuard {
     using SignatureChecker for bytes;
 
+    /// @notice Exact recovery action authorized by OIDC and the replacement signer.
+    /// @param account Account whose signer will be replaced.
+    /// @param expectedSignerHash Hash of the signer that must still control the account.
+    /// @param expectedSignerEpoch Signer epoch that must still be current.
+    /// @param newSignerHash Hash of the complete replacement signer encoding.
+    /// @param nonce Current sequential recovery nonce for the account.
+    /// @param validAfter First timestamp at which the request may be scheduled.
+    /// @param validUntil First timestamp at which the request may no longer be scheduled.
     struct RecoveryRequest {
         address account;
         bytes32 expectedSignerHash;
@@ -22,6 +32,12 @@ contract OIDCRecoveryController is EIP712, ReentrancyGuard {
         uint64 validUntil;
     }
 
+    /// @notice Recovery data retained during the delay and finalization window.
+    /// @param expectedSignerHash Signer hash captured at scheduling time.
+    /// @param expectedSignerEpoch Signer epoch captured at scheduling time.
+    /// @param newSigner Complete replacement signer encoding.
+    /// @param digest EIP-712 recovery digest authorized by OIDC and the replacement signer.
+    /// @param executeAfter Earliest timestamp at which the recovery may be finalized.
     struct PendingRecovery {
         bytes32 expectedSignerHash;
         uint256 expectedSignerEpoch;
@@ -30,18 +46,33 @@ contract OIDCRecoveryController is EIP712, ReentrancyGuard {
         uint64 executeAfter;
     }
 
+    /// @dev EIP-712 type hash used to construct the recovery digest. The digest is the provider nonce and
+    /// replacement-signer signature message.
     bytes32 public constant RECOVERY_TYPEHASH = keccak256(
         "Recovery(address account,bytes32 expectedSignerHash,uint256 expectedSignerEpoch,bytes32 newSignerHash,uint256 nonce,uint64 validAfter,uint64 validUntil)"
     );
 
+    /// @notice Verifier used to authenticate normalized OIDC claims.
     IOIDCClaimVerifier public immutable claimVerifier;
+    /// @notice Required delay between scheduling and finalization, in seconds.
     uint64 public immutable recoveryDelay;
+    /// @notice Seconds after `executeAfter` during which finalization remains allowed, including the endpoint.
     uint64 public immutable recoveryWindow;
+    /// @notice Maximum accepted age of a claim at scheduling time, in seconds.
     uint64 public immutable maxClaimAge;
 
+    /// @notice Next recovery nonce required for each account.
     mapping(address account => uint256 nonce) public recoveryNonces;
+    /// @dev At most one pending recovery is stored per account.
     mapping(address account => PendingRecovery) private _pending;
 
+    /// @dev Emitted when a recovery enters its mandatory delay.
+    /// @param account Account to recover.
+    /// @param digest Authorized EIP-712 recovery digest.
+    /// @param expectedSignerHash Signer hash required at finalization.
+    /// @param expectedSignerEpoch Signer epoch required at finalization.
+    /// @param newSigner Complete replacement signer encoding.
+    /// @param executeAfter Earliest finalization timestamp.
     event RecoveryScheduled(
         address indexed account,
         bytes32 indexed digest,
@@ -50,20 +81,40 @@ contract OIDCRecoveryController is EIP712, ReentrancyGuard {
         bytes newSigner,
         uint64 executeAfter
     );
+    /// @dev Emitted when an account cancels its pending recovery.
+    /// @param account Account whose recovery was cancelled.
+    /// @param digest Cancelled recovery digest.
     event RecoveryCancelled(address indexed account, bytes32 indexed digest);
+    /// @dev Emitted when scheduling clears a recovery that passed its finalization window.
+    /// @param account Account whose expired recovery was cleared.
+    /// @param digest Expired recovery digest.
     event ExpiredRecoveryCleared(address indexed account, bytes32 indexed digest);
+    /// @dev Emitted after a pending recovery replaces the account signer.
+    /// @param account Recovered account.
+    /// @param digest Finalized recovery digest.
     event RecoveryFinalized(address indexed account, bytes32 indexed digest);
 
+    /// @dev Thrown when a constructor dependency or timing parameter is invalid.
     error InvalidConfiguration();
+    /// @dev Thrown when request fields, account state, nonce, or validity bounds do not match.
     error InvalidRecoveryRequest();
+    /// @dev Thrown when the verified claim does not authorize the exact recovery action.
     error InvalidClaim();
+    /// @dev Thrown when the replacement signer does not validate the recovery digest.
     error InvalidProofOfPossession();
+    /// @dev Thrown when an unexpired recovery already occupies the account's pending slot.
     error RecoveryAlreadyPending();
+    /// @dev Thrown when no recovery is pending for the account.
     error NoPendingRecovery();
+    /// @dev Thrown when finalization is attempted before the mandatory delay ends.
     error RecoveryNotReady();
+    /// @dev Thrown when finalization is attempted after the recovery window closes.
     error RecoveryExpired();
-    error OnlyAccountCanCancel();
 
+    /// @param claimVerifier_ Contract that authenticates and normalizes OIDC evidence.
+    /// @param recoveryDelay_ Mandatory scheduling delay in seconds.
+    /// @param recoveryWindow_ Finalization window after the delay, in seconds.
+    /// @param maxClaimAge_ Maximum claim age accepted at scheduling time, in seconds.
     constructor(
         IOIDCClaimVerifier claimVerifier_,
         uint64 recoveryDelay_,
@@ -80,10 +131,16 @@ contract OIDCRecoveryController is EIP712, ReentrancyGuard {
         maxClaimAge = maxClaimAge_;
     }
 
+    /// @notice Returns the pending recovery for an account.
+    /// @param account Account to query.
+    /// @return Stored recovery, or an all-zero value when none is pending.
     function getPending(address account) external view returns (PendingRecovery memory) {
         return _pending[account];
     }
 
+    /// @notice Computes the EIP-712 digest that OIDC and the replacement signer must authorize.
+    /// @param request Exact recovery request.
+    /// @return Chain- and controller-bound recovery digest.
     function hashRecovery(RecoveryRequest memory request) public view returns (bytes32) {
         return _hashTypedDataV4(
             keccak256(
@@ -101,6 +158,14 @@ contract OIDCRecoveryController is EIP712, ReentrancyGuard {
         );
     }
 
+    /// @notice Verifies a recovery request and places it into the mandatory delay.
+    /// @dev Scheduling consumes the account recovery nonce even if the account later cancels. An expired
+    /// pending recovery is cleared before a new request is evaluated. The deletion and event are rolled
+    /// back if the replacement scheduling transaction later reverts.
+    /// @param request Exact account state, replacement signer hash, nonce, and validity interval.
+    /// @param newSigner Complete 20-byte address signer or ERC-7913 verifier-and-key encoding.
+    /// @param proofOfPossession Replacement signer signature over `hashRecovery(request)`.
+    /// @param oidcProof Evidence accepted by `claimVerifier` with the same digest as its nonce.
     function schedule(
         RecoveryRequest calldata request,
         bytes calldata newSigner,
@@ -155,8 +220,11 @@ contract OIDCRecoveryController is EIP712, ReentrancyGuard {
         );
     }
 
-    function cancel(address account) external {
-        if (msg.sender != account) revert OnlyAccountCanCancel();
+    /// @notice Cancels the calling account's pending recovery.
+    /// @dev Cancellation is keyed by `msg.sender`. A signer cancels through `OIDCAccount.execute` or
+    /// `executeSigned`. The consumed recovery nonce is not restored.
+    function cancel() external {
+        address account = msg.sender;
         PendingRecovery storage pending = _pending[account];
         if (pending.executeAfter == 0) revert NoPendingRecovery();
         bytes32 digest = pending.digest;
@@ -164,6 +232,12 @@ contract OIDCRecoveryController is EIP712, ReentrancyGuard {
         emit RecoveryCancelled(account, digest);
     }
 
+    /// @notice Finalizes a mature recovery and installs the replacement signer.
+    /// @dev Any caller may finalize while
+    /// `executeAfter <= block.timestamp <= executeAfter + recoveryWindow`. Replacement-key possession
+    /// is checked again, and the account revalidates the expected signer hash and epoch.
+    /// @param accountAddress Account with a pending recovery.
+    /// @param proofOfPossession Replacement-signer signature over the stored digest.
     function finalize(address accountAddress, bytes calldata proofOfPossession)
         external
         nonReentrant
@@ -186,6 +260,7 @@ contract OIDCRecoveryController is EIP712, ReentrancyGuard {
         emit RecoveryFinalized(accountAddress, pending.digest);
     }
 
+    /// @dev Checks that an authenticated claim authorizes this account action and is currently fresh.
     function _matchesClaim(
         OIDCAccount account,
         IOIDCClaimVerifier.VerifiedOIDCClaim memory claim,

@@ -151,12 +151,13 @@ contract OIDCRecoveryControllerTest is Test {
         _setFreshClaim(digest);
         controller.schedule(request, newSigner, _sign(replacementPk, digest), hex"01");
 
+        vm.expectRevert(OIDCRecoveryController.NoPendingRecovery.selector);
+        vm.prank(address(0xBAD));
+        controller.cancel();
+        assertGt(controller.getPending(address(account)).executeAfter, 0);
+
         vm.prank(vm.addr(currentPk));
-        account.execute(
-            address(controller),
-            0,
-            abi.encodeCall(OIDCRecoveryController.cancel, (address(account)))
-        );
+        account.execute(address(controller), 0, abi.encodeCall(OIDCRecoveryController.cancel, ()));
         assertEq(controller.getPending(address(account)).executeAfter, 0);
 
         vm.expectRevert(OIDCRecoveryController.InvalidRecoveryRequest.selector);

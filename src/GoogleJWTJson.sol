@@ -1,10 +1,18 @@
 // SPDX-License-Identifier: MIT
 pragma solidity ^0.8.36;
 
-/// @dev Strict, bounded JSON parser for the protected header and claims used by Google ID tokens.
-/// It rejects escaped top-level member names and duplicate security-relevant members.
+import { Bytes } from "@openzeppelin/contracts/utils/Bytes.sol";
+
+/// @title Google JWT JSON Parser
+/// @notice Parses the protected header and security-relevant claims used by `GoogleJWTVerifier`.
+/// @dev Rejects duplicate or escaped top-level names, escaped protected values, invalid UTF-8,
+/// malformed unknown values, excessive nesting, and trailing input.
 library GoogleJWTJson {
+    using Bytes for bytes;
+
+    /// @dev Maximum nesting accepted while validating unknown values.
     uint256 private constant MAX_DEPTH = 8;
+    /// @dev Maximum number of values accepted in an `aud` array.
     uint256 private constant MAX_AUDIENCES = 8;
 
     bytes32 private constant ALG = keccak256("alg");
@@ -20,16 +28,45 @@ library GoogleJWTJson {
     bytes32 private constant EXP = keccak256("exp");
     bytes32 private constant NBF = keccak256("nbf");
 
+    uint256 private constant SEEN_ALG = 1 << 0;
+    uint256 private constant SEEN_KID = 1 << 1;
+    uint256 private constant REQUIRED_HEADER = SEEN_ALG | SEEN_KID;
+    uint256 private constant SEEN_ISS = 1 << 0;
+    uint256 private constant SEEN_AUD = 1 << 1;
+    uint256 private constant SEEN_AZP = 1 << 2;
+    uint256 private constant SEEN_SUB = 1 << 3;
+    uint256 private constant SEEN_NONCE = 1 << 4;
+    uint256 private constant SEEN_IAT = 1 << 5;
+    uint256 private constant SEEN_EXP = 1 << 6;
+    uint256 private constant SEEN_NBF = 1 << 7;
+    uint256 private constant REQUIRED_CLAIMS =
+        SEEN_ISS | SEEN_AUD | SEEN_SUB | SEEN_NONCE | SEEN_IAT | SEEN_EXP;
+
+    /// @dev Mutable in-memory cursor shared by parser helpers.
+    /// @param input Complete JSON document.
+    /// @param position Index of the next byte to parse.
     struct Cursor {
         bytes input;
         uint256 position;
     }
 
+    /// @notice Protected JWS header fields required by the verifier.
+    /// @param algorithm Exact `alg` string.
+    /// @param keyId Exact `kid` string.
     struct Header {
         bytes algorithm;
         bytes keyId;
     }
 
+    /// @notice Signed Google claim fields consumed by the verifier.
+    /// @param issuer Exact `iss` value.
+    /// @param audiences One or more exact `aud` values.
+    /// @param authorizedParty Exact nonempty `azp`, or empty bytes when absent.
+    /// @param subject Stable nonempty provider `sub` value.
+    /// @param nonce Exact provider nonce string.
+    /// @param issuedAt Integer `iat` timestamp.
+    /// @param expiresAt Integer `exp` timestamp.
+    /// @param notBefore Integer `nbf` timestamp when present.
     struct Claims {
         bytes issuer;
         bytes[] audiences;
@@ -39,14 +76,23 @@ library GoogleJWTJson {
         uint64 issuedAt;
         uint64 expiresAt;
         uint64 notBefore;
-        bool hasNotBefore;
     }
 
+    /// @dev Thrown when JSON syntax or a protected field representation is invalid.
     error InvalidJSON();
+    /// @dev Thrown when a security-relevant top-level member appears more than once.
     error DuplicateClaim();
+    /// @dev Thrown when an audience array exceeds `MAX_AUDIENCES`.
     error TooManyAudiences();
+    /// @dev Thrown when a protected integer exceeds `uint64`.
     error IntegerOutOfRange();
 
+    /// @notice Parses and validates the protected fields required from a JWS header.
+    /// @dev Requires exactly one `alg` and one nonempty `kid`; the verifier checks the algorithm value.
+    /// Rejects `crit` and `b64` because no critical extensions or unencoded-payload mode are supported.
+    /// Unknown members are syntax-checked.
+    /// @param json Decoded protected-header JSON bytes.
+    /// @return header Parsed algorithm and key identifier.
     function parseHeader(bytes memory json) internal pure returns (Header memory header) {
         Cursor memory cursor = Cursor(json, 0);
         _expectObjectStart(cursor);
@@ -65,12 +111,10 @@ library GoogleJWTJson {
             _skipWhitespace(cursor);
             bytes32 keyHash = keccak256(key);
             if (keyHash == ALG) {
-                if (seen & 1 != 0) revert DuplicateClaim();
-                seen |= 1;
+                seen = _mark(seen, SEEN_ALG);
                 header.algorithm = _parsePlainString(cursor);
             } else if (keyHash == KID) {
-                if (seen & 2 != 0) revert DuplicateClaim();
-                seen |= 2;
+                seen = _mark(seen, SEEN_KID);
                 header.keyId = _parsePlainString(cursor);
             } else if (keyHash == CRIT || keyHash == B64) {
                 revert InvalidJSON();
@@ -79,11 +123,16 @@ library GoogleJWTJson {
             }
         }
         _finish(cursor);
-        if (seen != 3 || header.keyId.length == 0 || header.keyId.length > 128) {
+        if (seen != REQUIRED_HEADER || header.keyId.length == 0 || header.keyId.length > 128) {
             revert InvalidJSON();
         }
     }
 
+    /// @notice Parses the signed claim fields required by the Google verifier.
+    /// @dev Requires `iss`, `aud`, `sub`, `nonce`, `iat`, and `exp`; `azp` and `nbf` are optional. This
+    /// function validates representation and presence, while policy and time checks remain in the verifier.
+    /// @param json Decoded signed-payload JSON bytes.
+    /// @return claims Parsed security-relevant claims.
     function parseClaims(bytes memory json) internal pure returns (Claims memory claims) {
         Cursor memory cursor = Cursor(json, 0);
         _expectObjectStart(cursor);
@@ -102,42 +151,43 @@ library GoogleJWTJson {
             _skipWhitespace(cursor);
             bytes32 keyHash = keccak256(key);
             if (keyHash == ISS) {
-                seen = _mark(seen, 1);
+                seen = _mark(seen, SEEN_ISS);
                 claims.issuer = _parsePlainString(cursor);
             } else if (keyHash == AUD) {
-                seen = _mark(seen, 2);
+                seen = _mark(seen, SEEN_AUD);
                 claims.audiences = _parseAudience(cursor);
             } else if (keyHash == AZP) {
-                seen = _mark(seen, 4);
+                seen = _mark(seen, SEEN_AZP);
                 claims.authorizedParty = _parsePlainString(cursor);
                 if (claims.authorizedParty.length == 0) revert InvalidJSON();
             } else if (keyHash == SUB) {
-                seen = _mark(seen, 8);
+                seen = _mark(seen, SEEN_SUB);
                 claims.subject = _parsePlainString(cursor);
             } else if (keyHash == NONCE) {
-                seen = _mark(seen, 16);
+                seen = _mark(seen, SEEN_NONCE);
                 claims.nonce = _parsePlainString(cursor);
             } else if (keyHash == IAT) {
-                seen = _mark(seen, 32);
+                seen = _mark(seen, SEEN_IAT);
                 claims.issuedAt = _parseUint64(cursor);
             } else if (keyHash == EXP) {
-                seen = _mark(seen, 64);
+                seen = _mark(seen, SEEN_EXP);
                 claims.expiresAt = _parseUint64(cursor);
             } else if (keyHash == NBF) {
-                seen = _mark(seen, 128);
+                seen = _mark(seen, SEEN_NBF);
                 claims.notBefore = _parseUint64(cursor);
-                claims.hasNotBefore = true;
             } else {
                 _skipValue(cursor, 1);
             }
         }
         _finish(cursor);
         if (
-            seen & 123 != 123 || claims.issuer.length == 0 || claims.audiences.length == 0
-                || claims.subject.length == 0 || claims.subject.length > 255
+            seen & REQUIRED_CLAIMS != REQUIRED_CLAIMS || claims.issuer.length == 0
+                || claims.audiences.length == 0 || claims.subject.length == 0
+                || claims.subject.length > 255
         ) revert InvalidJSON();
     }
 
+    /// @dev Parses `aud` as one nonempty string or a bounded array of nonempty strings.
     function _parseAudience(Cursor memory cursor) private pure returns (bytes[] memory audiences) {
         _skipWhitespace(cursor);
         if (_peek(cursor) == 0x22) {
@@ -169,6 +219,7 @@ library GoogleJWTJson {
         }
     }
 
+    /// @dev Rejects duplicate protected claims while updating the seen-field bitmap.
     function _mark(uint256 seen, uint256 flag) private pure returns (uint256) {
         if (seen & flag != 0) revert DuplicateClaim();
         return seen | flag;
@@ -179,22 +230,21 @@ library GoogleJWTJson {
         _expect(cursor, 0x7b);
     }
 
+    /// @dev Rejects non-whitespace content after the top-level object.
     function _finish(Cursor memory cursor) private pure {
         _skipWhitespace(cursor);
         if (cursor.position != cursor.input.length) revert InvalidJSON();
     }
 
+    /// @dev Parses a protected string without escapes. This gives `alg`, `kid`, and signed claim values
+    /// one exact byte representation for comparison and hashing.
     function _parsePlainString(Cursor memory cursor) private pure returns (bytes memory value) {
         _expect(cursor, 0x22);
         uint256 start = cursor.position;
         while (cursor.position < cursor.input.length) {
             uint8 character = uint8(cursor.input[cursor.position]);
             if (character == 0x22) {
-                uint256 length = cursor.position - start;
-                value = new bytes(length);
-                for (uint256 i = 0; i < length; ++i) {
-                    value[i] = cursor.input[start + i];
-                }
+                value = cursor.input.slice(start, cursor.position);
                 ++cursor.position;
                 return value;
             }
@@ -208,6 +258,7 @@ library GoogleJWTJson {
         revert InvalidJSON();
     }
 
+    /// @dev Parses a nonnegative decimal integer with no leading zeros and checks `uint64` range.
     function _parseUint64(Cursor memory cursor) private pure returns (uint64 result) {
         uint256 start = cursor.position;
         if (start >= cursor.input.length) revert InvalidJSON();
@@ -235,6 +286,7 @@ library GoogleJWTJson {
         return uint64(number);
     }
 
+    /// @dev Validates and skips an unknown JSON value while enforcing `MAX_DEPTH`.
     function _skipValue(Cursor memory cursor, uint256 depth) private pure {
         if (depth > MAX_DEPTH) revert InvalidJSON();
         _skipWhitespace(cursor);
@@ -284,6 +336,7 @@ library GoogleJWTJson {
         }
     }
 
+    /// @dev Validates a general JSON string, including UTF-8 and standard JSON escapes.
     function _skipString(Cursor memory cursor) private pure {
         _expect(cursor, 0x22);
         while (cursor.position < cursor.input.length) {
@@ -314,6 +367,8 @@ library GoogleJWTJson {
         revert InvalidJSON();
     }
 
+    /// @dev Validates one canonical UTF-8 scalar and returns the next byte position. Overlong encodings,
+    /// encoded surrogates, out-of-range code points, invalid continuation bytes, and truncation revert.
     function _nextUtf8(bytes memory input, uint256 position) private pure returns (uint256) {
         uint8 first = uint8(input[position]);
         if (first >= 0xc2 && first <= 0xdf) {
@@ -352,6 +407,7 @@ library GoogleJWTJson {
         return character >= 0x80 && character <= 0xbf;
     }
 
+    /// @dev Validates one `\uXXXX` escape and consumes the required low surrogate after a high surrogate.
     function _skipUnicodeEscape(Cursor memory cursor) private pure {
         uint256 codepoint = _readHex4(cursor.input, cursor.position);
         cursor.position += 4;
@@ -383,6 +439,7 @@ library GoogleJWTJson {
         revert InvalidJSON();
     }
 
+    /// @dev Validates the complete JSON number grammar for unknown numeric values.
     function _skipNumber(Cursor memory cursor) private pure {
         uint256 start = cursor.position;
         if (_consume(cursor, 0x2d)) { }
@@ -477,10 +534,5 @@ library GoogleJWTJson {
 
     function _isDigitOneToNine(uint8 character) private pure returns (bool) {
         return character >= 0x31 && character <= 0x39;
-    }
-
-    function _isHex(uint8 character) private pure returns (bool) {
-        return _isDigit(character) || (character >= 0x41 && character <= 0x46)
-            || (character >= 0x61 && character <= 0x66);
     }
 }

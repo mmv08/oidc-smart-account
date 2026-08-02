@@ -22,10 +22,10 @@ contract GoogleJWTParsingHarness {
     function parseClaims(bytes memory input)
         external
         pure
-        returns (uint256 audienceCount, uint64 issuedAt, uint64 expiresAt, bool hasNotBefore)
+        returns (uint256 audienceCount, uint64 issuedAt, uint64 expiresAt, uint64 notBefore)
     {
         GoogleJWTJson.Claims memory claims = GoogleJWTJson.parseClaims(input);
-        return (claims.audiences.length, claims.issuedAt, claims.expiresAt, claims.hasNotBefore);
+        return (claims.audiences.length, claims.issuedAt, claims.expiresAt, claims.notBefore);
     }
 }
 
@@ -60,7 +60,7 @@ contract GoogleJWTParsingTest is Test {
         assertEq(algorithm, bytes("RS256"));
         assertEq(keyId, bytes("k"));
 
-        (uint256 audiences, uint64 issuedAt, uint64 expiresAt, bool hasNotBefore) = harness.parseClaims(
+        (uint256 audiences, uint64 issuedAt, uint64 expiresAt, uint64 notBefore) = harness.parseClaims(
             bytes(
                 '{ "iss":"https://accounts.google.com", "aud":["client","other"], "azp":"client", "sub":"s", "nonce":"n", "iat":1, "exp":2, "nbf":0, "unknown":[{"s":"line\\n"}] }'
             )
@@ -68,7 +68,7 @@ contract GoogleJWTParsingTest is Test {
         assertEq(audiences, 2);
         assertEq(issuedAt, 1);
         assertEq(expiresAt, 2);
-        assertTrue(hasNotBefore);
+        assertEq(notBefore, 0);
     }
 
     function test_parserRejectsDuplicateMissingEscapedAndTrailingProtectedMembers() public {

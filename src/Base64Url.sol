@@ -1,10 +1,17 @@
 // SPDX-License-Identifier: MIT
 pragma solidity ^0.8.36;
 
-/// @dev Strict unpadded base64url decoder for compact JWS/JWT segments.
+/// @title Strict Base64URL Decoder
+/// @notice Decodes unpadded Base64URL segments used by compact JWS and JWT values.
+/// @dev Rejects padding, non-URL-safe characters, impossible lengths, and nonzero unused pad bits so
+/// each accepted byte string has one canonical encoding.
 library Base64Url {
+    /// @dev Thrown when the input is not canonical unpadded Base64URL.
     error InvalidBase64Url();
 
+    /// @notice Decodes one canonical unpadded Base64URL value.
+    /// @param input ASCII Base64URL bytes without `=` padding.
+    /// @return output Decoded bytes.
     function decode(bytes memory input) internal pure returns (bytes memory output) {
         uint256 length = input.length;
         uint256 remainder = length & 3;

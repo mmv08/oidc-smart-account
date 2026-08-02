@@ -10,9 +10,10 @@ import { IOIDCClaimVerifier } from "../src/IOIDCClaimVerifier.sol";
 import { OIDCRecoveryController } from "../src/OIDCRecoveryController.sol";
 import { OIDCAccountFactory } from "../src/OIDCAccountFactory.sol";
 
-/// @notice Deploys the immutable on-chain identity protocol around an existing OIDC proof verifier.
-/// @dev The verifier address is an explicit trust boundary; it may be the included direct Google
-/// verifier or another independently reviewed adapter.
+/// @title Core OIDC Account Deployment Script
+/// @notice Deploys the recovery controller, account factory, and WebAuthn signer verifier.
+/// @dev Reads the claim verifier and bounded timing parameters from the environment. The verifier is an
+/// explicit trust boundary and may be the included Google verifier or another compatible implementation.
 contract Deploy is Script {
     using SafeCast for uint256;
 
@@ -23,8 +24,16 @@ contract Deploy is Script {
     uint256 private constant MIN_CLAIM_AGE = 1 minutes;
     uint256 private constant MAX_CLAIM_AGE = 1 days;
 
+    /// @dev Thrown when an environment duration falls outside the deployment safety bounds.
+    /// @param variableName Name of the invalid environment variable.
+    /// @param value Supplied duration in seconds.
     error UnsafeTimingConfiguration(string variableName, uint256 value);
 
+    /// @notice Broadcasts the core protocol deployment from `DEPLOYER_PRIVATE_KEY`.
+    /// @dev Reads `OIDC_CLAIM_VERIFIER`, `RECOVERY_DELAY`, `RECOVERY_WINDOW`, and `MAX_CLAIM_AGE`.
+    /// @return controller Deployed recovery controller.
+    /// @return factory Deployed deterministic account factory.
+    /// @return webAuthnVerifier Deployed ERC-7913 WebAuthn signer verifier.
     function run()
         external
         returns (
@@ -54,6 +63,11 @@ contract Deploy is Script {
         console2.log("ERC7913WebAuthnVerifier", address(webAuthnVerifier));
     }
 
+    /// @dev Reads a duration from the environment and enforces inclusive deployment bounds.
+    /// @param variableName Environment variable to read.
+    /// @param minimum Minimum accepted value in seconds.
+    /// @param maximum Maximum accepted value in seconds.
+    /// @return duration Validated duration narrowed to `uint64`.
     function _readDuration(string memory variableName, uint256 minimum, uint256 maximum)
         private
         view

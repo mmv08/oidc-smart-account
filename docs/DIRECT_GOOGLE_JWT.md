@@ -31,10 +31,10 @@ OIDCAccountFactory / OIDCRecoveryController
           GoogleKeyRegistry
                     |
                     v
-     kid hash -> RSA exponent/modulus + issue interval
+       kid hash -> RSA modulus + issue interval
 ```
 
-- `GoogleKeyRegistry` accepts only 2048-bit moduli and exponent `65537` (`0x010001`).
+- `GoogleKeyRegistry` accepts only 256-byte big-endian modulus encodings. `GoogleJWTVerifier` fixes the exponent to `65537` (`0x010001`).
 - Keys are indexed by `keccak256(bytes(kid))`; the raw key identifier is not stored.
 - `validAfter <= token.iat` must hold.
 - `validUntil == 0` means no configured end. Otherwise `token.iat < validUntil` must hold.
@@ -75,7 +75,7 @@ The verifier:
 3. strictly decodes unpadded canonical Base64URL;
 4. parses the protected header and requires exactly one `alg` and one `kid`;
 5. pins `alg` to `RS256`;
-6. loads the 2048-bit RSA key selected by `kid`;
+6. loads the 256-byte RSA modulus encoding selected by `kid`;
 7. verifies PKCS#1 v1.5 SHA-256 over the exact `header.payload` bytes with OpenZeppelin `RSA.sol` and Ethereum's modular-exponentiation precompile;
 8. strictly parses the signed payload;
 9. rejects duplicate protected claims, escaped protected member names, malformed JSON, invalid UTF-8 and surrogate escapes, noninteger timestamps, excessive nesting, unsupported audience forms, and trailing content;
@@ -126,7 +126,7 @@ forge script script/DeployGoogleJWT.s.sol:DeployGoogleJWT \
 Populate current Google keys from the pinned JWKS endpoint. Each RSA JWK provides:
 
 - `kid`: hash its UTF-8 bytes with Keccak-256;
-- `e`: Base64URL-decode to `0x010001`;
+- `e`: confirm that it Base64URL-decodes to the verifier's fixed exponent `0x010001`;
 - `n`: Base64URL-decode to the 256-byte modulus.
 
 Then submit from the configured updater:
@@ -134,7 +134,6 @@ Then submit from the configured updater:
 ```solidity
 GoogleKeyRegistry.setKey(
     kidHash,
-    exponent,
     modulus,
     validAfter,
     validUntil

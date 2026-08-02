@@ -179,13 +179,13 @@ It increments the recovery nonce immediately and stores only the exact pending r
 
 **Finalize** is permissionless after the immutable delay and through the end of the immutable execution window. The caller supplies a current replacement-key proof of possession. Finalization rechecks that proof plus the expected signer hash and monotonic signer epoch through `OIDCAccount`; rotating away and later back to the same signer cannot revive stale recovery. Expired pending recovery cannot finalize and does not block a newer request.
 
-The current signer cancels by making the account itself call `cancel(account)`, directly or through signed self-execution.
+The signer makes the account itself call `cancel()`: an address signer can use direct `execute`, while any supported signer can authorize relayed `executeSigned`.
 
 ### 3.5 Direct Google JWT adapter
 
-`GoogleJWTVerifier` implements `IOIDCClaimVerifier` for compact Google RS256 ID tokens. RS256 means RSA PKCS#1 v1.5 signatures over a SHA-256 digest. The verifier strictly decodes the original signed token, selects a 2048-bit RSA key by the protected `kid`, verifies the signature with OpenZeppelin's RSA implementation, parses security-relevant claims from the signed payload, and returns the normalized claim.
+`GoogleJWTVerifier` implements `IOIDCClaimVerifier` for compact Google RS256 ID tokens. RS256 means RSA PKCS#1 v1.5 signatures over a SHA-256 digest. The verifier strictly decodes the original signed token, selects a 256-byte RSA modulus encoding by the protected `kid`, verifies the signature with OpenZeppelin's RSA implementation, parses security-relevant claims from the signed payload, and returns the normalized claim.
 
-`GoogleKeyRegistry` maps `keccak256(bytes(kid))` to exponent `65537`, a 2048-bit modulus, and an issue-time interval. Its owner is one project-controlled updater. This owner is an explicit recovery trust root: registering an attacker modulus enables forged Google claims. Ethereum cannot fetch Google's HTTPS JWKS endpoint, so key publication and rotation remain an off-chain operational responsibility.
+`GoogleKeyRegistry` maps `keccak256(bytes(kid))` to a 256-byte big-endian modulus encoding and an issue-time interval. `GoogleJWTVerifier` fixes the RSA exponent to `65537`. The registry owner is one project-controlled updater and can register an attacker modulus that enables forged Google claims. Ethereum cannot fetch Google's HTTPS JWKS endpoint, so key publication and rotation remain an off-chain operational responsibility.
 
 The adapter accepts `abi.encode(bytes(compactJwt), bytes32(identitySalt))`. Issuer, audience, authorized party, subject, nonce, and timestamps come from the exact signed payload; policy inputs come from immutable verifier configuration. The identity salt is a caller-supplied commitment-opening witness: it is combined with the signed subject and immutable policy, so changing it changes `identityCommitment` rather than substituting a signed claim. No caller-supplied normalized claim is trusted. See [direct Google JWT verification](DIRECT_GOOGLE_JWT.md).
 
