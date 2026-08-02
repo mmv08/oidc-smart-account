@@ -18,9 +18,9 @@ normalized authenticated OIDC claims
 IOIDCClaimVerifier
 ```
 
-`IOIDCClaimVerifier` is the explicit proof-transport boundary. The repository now includes one optional concrete adapter, `GoogleJWTVerifier`, which verifies Google RS256 ID tokens directly on-chain against a project-controlled key registry. Oracle, registry-proof, and zero-knowledge adapters can still implement the same interface.
+`IOIDCClaimVerifier` is the explicit proof-transport boundary. The repository includes `GoogleJWTVerifier`, which verifies Google RS256 ID tokens directly on-chain. Its verifier-facing key registry is a freshness-gated `TEEGoogleKeyUpdater`: anyone may relay a complete canonical key snapshot signed by an enrolled AWS Nitro Enclave application key. Oracle, registry-proof, and zero-knowledge adapters can still implement the same interface.
 
-No attestor set, quorum, oracle protocol, or JWT logic appears in the account, factory, or recovery controller. The Google-specific verifier and key registry remain replaceable edge adapters.
+No attestor, oracle, or JWT logic appears in the account, factory, or recovery controller. Google-key provenance remains a replaceable edge adapter. The TEE path is hardware-backed trust minimization, not a trustless oracle: Google, Web PKI, AWS Nitro/KMS, the measured image, enrollment governance, and availability remain explicit assumptions.
 
 ## On-chain identity model
 
@@ -57,7 +57,9 @@ The core remains provider-agnostic. Google and Apple policy derivation and claim
 - `src/IOIDCClaimVerifier.sol` — minimal normalized claim-verification boundary.
 - `src/OIDCIdentity.sol` — canonical Google/Apple identifiers and typed policy/identity commitments.
 - `src/GoogleJWTVerifier.sol` — strict Google RS256 compact-JWT verification and claim normalization.
-- `src/GoogleKeyRegistry.sol` — minimal project-controlled Google RSA-key registry.
+- `src/TEEGoogleKeyUpdater.sol` — canonical signed snapshots, internal RSA-key storage, attestor epochs, replay/freshness checks, key lifecycle, pause, and delayed rotation.
+- `src/GoogleKeyRegistry.sol` — standalone owner-managed RSA-key registry for non-TEE deployments.
+- `tee-updater/` — measured Rust fetch/sign service, Nitro/KMS integration, enrollment verifier, parent tooling, and operations guide.
 - `src/Base64Url.sol` / `src/GoogleJWTJson.sol` — bounded JWT decoding and strict claim parsing.
 - `src/OIDCAccount.sol` — identity-bound account with one independent ERC-7913 signer.
 - `src/OIDCAccountFactory.sol` — OIDC-authorized deterministic account creation.
@@ -156,13 +158,13 @@ RECOVERY_WINDOW
 MAX_CLAIM_AGE
 ```
 
-For the direct Google path, first deploy `script/DeployGoogleJWT.s.sol`, populate its registry from Google's pinned JWKS endpoint, and use the resulting `GoogleJWTVerifier` as `OIDC_CLAIM_VERIFIER`. See [direct Google JWT verification](docs/DIRECT_GOOGLE_JWT.md) and `.env.example`.
+For the direct Google path, deploy `script/DeployGoogleJWT.s.sol`. It deploys one uninitialized updater that stores keys internally and wires `GoogleJWTVerifier` directly to its freshness-gated `getKey`. Then complete and publish the Nitro enrollment ceremony before scheduling the first attestor; the deployer cannot set one directly. Use the verifier as `OIDC_CLAIM_VERIFIER`. See [direct Google JWT verification](docs/DIRECT_GOOGLE_JWT.md), the [TEE updater operations guide](tee-updater/README.md), and `.env.example`.
 
 ## Deliberate exclusions
 
 - no ERC-4337 EntryPoint, bundler, paymaster, or UserOperation;
-- no oracle or attestor network;
-- no automated or decentralized Google-key updater; the included registry has one explicit owner;
+- no claim that the TEE updater is mathematically trustless or that Nitro attestation proves a fresh Google fetch;
+- no native Nitro COSE/CBOR/X.509 verifier in Solidity;
 - no direct Apple JWT verifier;
 - no raw token or email as permanent identity;
 - no OIDC authorization of routine execution;

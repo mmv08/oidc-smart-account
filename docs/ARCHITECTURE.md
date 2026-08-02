@@ -181,13 +181,23 @@ It increments the recovery nonce immediately and stores only the exact pending r
 
 The signer makes the account itself call `cancel()`: an address signer can use direct `execute`, while any supported signer can authorize relayed `executeSigned`.
 
-### 3.5 Direct Google JWT adapter
+### 3.5 Direct Google JWT adapter and TEE key provenance
 
-`GoogleJWTVerifier` implements `IOIDCClaimVerifier` for compact Google RS256 ID tokens. RS256 means RSA PKCS#1 v1.5 signatures over a SHA-256 digest. The verifier strictly decodes the original signed token, selects a 256-byte RSA modulus encoding by the protected `kid`, verifies the signature with OpenZeppelin's RSA implementation, parses security-relevant claims from the signed payload, and returns the normalized claim.
+`GoogleJWTVerifier` implements `IOIDCClaimVerifier` for compact Google RS256 ID tokens. RS256 means RSA PKCS#1 v1.5 signatures over a SHA-256 digest. The verifier strictly decodes the original signed token, selects a 256-byte RSA modulus by protected `kid`, verifies the signature with OpenZeppelin's RSA implementation, parses security-relevant signed claims, and returns the normalized claim.
 
-`GoogleKeyRegistry` maps `keccak256(bytes(kid))` to a 256-byte big-endian modulus encoding and an issue-time interval. `GoogleJWTVerifier` fixes the RSA exponent to `65537`. The registry owner is one project-controlled updater and can register an attacker modulus that enables forged Google claims. Ethereum cannot fetch Google's HTTPS JWKS endpoint, so key publication and rotation remain an off-chain operational responsibility.
+The verifier reads keys only through `TEEGoogleKeyUpdater`, which implements the unchanged `IGoogleKeyRegistry.getKey(bytes32)` boundary and stores the key intervals internally. There is no separate raw registry in the TEE deployment, so pause and staleness cannot be bypassed through another storage address.
 
-The adapter accepts `abi.encode(bytes(compactJwt), bytes32(identitySalt))`. Issuer, audience, authorized party, subject, nonce, and timestamps come from the exact signed payload; policy inputs come from immutable verifier configuration. The identity salt is a caller-supplied commitment-opening witness: it is combined with the signed subject and immutable policy, so changing it changes `identityCommitment` rather than substituting a signed claim. No caller-supplied normalized claim is trusted. See [direct Google JWT verification](DIRECT_GOOGLE_JWT.md).
+A measured AWS Nitro Enclave fetches exactly Google's HTTPS JWKS endpoint, terminates and authenticates TLS inside the enclave, strictly validates the complete RS256 key set, sorts it by `kidHash`, and signs an EIP-712 snapshot with an enclave-controlled secp256k1 application key. The untrusted parent may proxy only raw KMS and Google TLS bytes. Anyone may relay the resulting snapshot.
+
+The updater verifies the current attestor, epoch, nonce, observation time, canonical order, modulus shape, and complete-set lifecycle. New keys begin at the observation time; omitted keys retire at the newer observation time; reappearing keys start a new interval. Reads fail closed before initial enrollment/snapshot, while paused, or when the last snapshot is stale. Normal account execution never reads this path.
+
+The contract starts with no attestor. Threshold governance schedules the first verified enclave address and later rotations through an observable delay. A separate guardian can pause and cancel but cannot enroll a key, publish keys, or unpause. Native Nitro attestation is verified during the published enrollment ceremony, not in Solidity; implementing COSE/CBOR and X.509 chain policy on-chain would add a larger and more fragile trust component than the updater.
+
+This changes, but does not remove, the trust root. Google, Web Public Key Infrastructure, AWS Nitro hardware/attestation, AWS KMS, the measured image and build, enrollment reviewers/governance, and availability remain trusted. Nitro attestation proves that an accepted measured program ran; it does not prove a fresh Google fetch. TLS establishes endpoint authenticity, while signed time, nonce, monotonic observation, submission age, and read-time freshness constrain replay and staleness.
+
+`TEEGoogleKeyUpdater` stores `keccak256(bytes(kid))`, a 256-byte modulus, and one issue-time interval. `GoogleJWTVerifier` fixes exponent `65537`. Because only one interval is stored per `kidHash`, a rare disappearance followed by reappearance overwrites the old interval; production policy must determine whether the bounded JWT lifetime makes this acceptable or whether interval history is required.
+
+The adapter accepts `abi.encode(bytes(compactJwt), bytes32(identitySalt))`. Issuer, audience, authorized party, subject, nonce, and timestamps come from the exact signed payload; policy inputs come from immutable verifier configuration. The identity salt is a caller-supplied commitment-opening witness: changing it changes `identityCommitment` rather than substituting a signed claim. See [direct Google JWT verification](DIRECT_GOOGLE_JWT.md) and the [TEE updater operations guide](../tee-updater/README.md).
 
 ## 4. Google and Apple policy
 
@@ -253,8 +263,8 @@ The selected proof adapter therefore controls part of the privacy model. Identit
 ## 8. Deliberate omissions
 
 - no direct Apple JWT verifier;
-- no decentralized or automated Google-key updater;
-- no attestor set, quorum, epoch, or signatures;
+- no native on-chain Nitro COSE/CBOR/X.509 attestation verifier;
+- no claim that one measured enclave or threshold governance is a decentralized oracle;
 - no generic oracle protocol;
 - no identity-update or provider-migration action;
 - no OIDC signer addition;

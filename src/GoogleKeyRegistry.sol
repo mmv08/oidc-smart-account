@@ -5,9 +5,9 @@ import { Ownable } from "@openzeppelin/contracts/access/Ownable.sol";
 import { IGoogleKeyRegistry } from "./IGoogleKeyRegistry.sol";
 
 /// @title Google RSA Modulus Registry
-/// @notice Stores the Google RSA moduli accepted by `GoogleJWTVerifier`.
-/// @dev The owner publishes keys obtained from Google's pinned JWKS endpoint. Ownership is a security
-/// boundary: an owner that registers an attacker key can forge claims accepted by the verifier.
+/// @notice Owner-managed registry for deployments that do not use the TEE updater.
+/// @dev The TEE deployment stores keys directly in `TEEGoogleKeyUpdater` and does not deploy this
+/// contract, avoiding a second mutation surface that could bypass pause and freshness policy.
 contract GoogleKeyRegistry is Ownable, IGoogleKeyRegistry {
     /// @notice RSA modulus and its accepted token issue-time interval.
     /// @param modulus 256-byte big-endian RSA modulus encoding.
@@ -34,7 +34,7 @@ contract GoogleKeyRegistry is Ownable, IGoogleKeyRegistry {
     /// @dev Thrown when key material or its issue-time interval is invalid.
     error InvalidKey();
 
-    /// @param initialOwner Project-controlled address responsible for Google key rotation.
+    /// @param initialOwner Address authorized to manage the standalone registry.
     constructor(address initialOwner) Ownable(initialOwner) { }
 
     /// @notice Creates or replaces the RSA modulus registered for `kidHash`.

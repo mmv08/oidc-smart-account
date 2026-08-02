@@ -2,29 +2,36 @@
 pragma solidity ^0.8.36;
 
 import { Script, console2 } from "forge-std/Script.sol";
-import { GoogleKeyRegistry } from "../src/GoogleKeyRegistry.sol";
+import { SafeCast } from "@openzeppelin/contracts/utils/math/SafeCast.sol";
 import { GoogleJWTVerifier } from "../src/GoogleJWTVerifier.sol";
+import { TEEGoogleKeyUpdater } from "../src/TEEGoogleKeyUpdater.sol";
 
-/// @title Google JWT Verifier Deployment Script
-/// @notice Deploys an empty Google key registry and its direct RS256 verifier.
-/// @dev `GOOGLE_KEY_UPDATER` can authorize arbitrary signing keys. Add Google keys before using the verifier.
+/// @title TEE-backed Google JWT Verifier Deployment Script
+/// @notice Deploys the freshness-gated TEE key registry and direct RS256 verifier.
+/// @dev The initial attestor must be enrolled only after independently verifying its AWS Nitro evidence.
 contract DeployGoogleJWT is Script {
-    /// @notice Broadcasts the Google verifier deployment from `DEPLOYER_PRIVATE_KEY`.
-    /// @dev Reads `GOOGLE_KEY_UPDATER`, `GOOGLE_CLIENT_ID`, and optional `GOOGLE_AUTHORIZED_PARTY`.
-    /// @return registry Empty registry owned by the configured updater.
-    /// @return verifier Verifier bound to the registry and immutable client policy.
-    function run() external returns (GoogleKeyRegistry registry, GoogleJWTVerifier verifier) {
+    using SafeCast for uint256;
+
+    /// @notice Broadcasts the complete Google key-provenance deployment from `DEPLOYER_PRIVATE_KEY`.
+    /// @dev The verifier consumes the updater directly; there is no bypassable raw registry.
+    function run() external returns (TEEGoogleKeyUpdater updater, GoogleJWTVerifier verifier) {
         uint256 deployerKey = vm.envUint("DEPLOYER_PRIVATE_KEY");
-        address updater = vm.envAddress("GOOGLE_KEY_UPDATER");
+        address governance = vm.envAddress("TEE_GOVERNANCE");
+        address guardian = vm.envAddress("TEE_GUARDIAN");
+        uint64 rotationDelay = vm.envUint("TEE_ATTESTOR_ROTATION_DELAY").toUint64();
+        uint64 maxObservationAge = vm.envUint("TEE_MAX_OBSERVATION_AGE").toUint64();
+        uint64 maxRegistryStaleness = vm.envUint("TEE_MAX_REGISTRY_STALENESS").toUint64();
         string memory clientId = vm.envString("GOOGLE_CLIENT_ID");
         string memory authorizedParty = vm.envOr("GOOGLE_AUTHORIZED_PARTY", string(""));
 
         vm.startBroadcast(deployerKey);
-        registry = new GoogleKeyRegistry(updater);
-        verifier = new GoogleJWTVerifier(registry, clientId, authorizedParty);
+        updater = new TEEGoogleKeyUpdater(
+            governance, guardian, rotationDelay, maxObservationAge, maxRegistryStaleness
+        );
+        verifier = new GoogleJWTVerifier(updater, clientId, authorizedParty);
         vm.stopBroadcast();
 
-        console2.log("GoogleKeyRegistry", address(registry));
+        console2.log("TEEGoogleKeyUpdater (key registry)", address(updater));
         console2.log("GoogleJWTVerifier", address(verifier));
         console2.logBytes32(verifier.providerPolicyId());
     }

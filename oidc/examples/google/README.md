@@ -97,7 +97,7 @@ This is Solidity `abi.encode(bytes(compactJwt), bytes32(identitySalt))`. Keep it
 
 To schedule recovery you still need to:
 
-1. populate `GoogleKeyRegistry` with the current public Google signing key selected by the token's `kid`;
+1. ensure the enrolled `TEEGoogleKeyUpdater` has accepted a fresh, complete signed snapshot containing the token's `kid`, and confirm its freshness-gated `getKey` resolves that key;
 2. obtain the replacement signer's proof over the same recovery digest;
 3. have the trusted server/relayer call:
 
@@ -108,7 +108,7 @@ To schedule recovery you still need to:
 4. wait for the recovery delay;
 5. call `finalize(account, currentReplacementProof)` with a still-valid replacement proof.
 
-Do not return the raw token/proof from a production callback, write it to logs, or store it longer than necessary. See [`docs/DIRECT_GOOGLE_JWT.md`](../../../docs/DIRECT_GOOGLE_JWT.md) for registry deployment, key rotation, exact validation, gas, trust, and privacy details.
+Do not return the raw token/proof from a production callback, write it to logs, or store it longer than necessary. See [`docs/DIRECT_GOOGLE_JWT.md`](../../../docs/DIRECT_GOOGLE_JWT.md) for verifier deployment and validation, and the [`TEE updater operations guide`](../../../tee-updater/README.md) for enrollment, complete snapshots, rotation, pause, and freshness.
 
 ## Flow scope
 

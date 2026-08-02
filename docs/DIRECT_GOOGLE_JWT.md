@@ -4,17 +4,21 @@ Status: implemented reference adapter; unaudited and not suitable for real funds
 
 ## 1. Trust model
 
-`GoogleJWTVerifier` authenticates Google ID tokens directly on-chain. It depends on `GoogleKeyRegistry`, whose owner is one project-controlled updater.
+`GoogleJWTVerifier` authenticates Google ID tokens directly on-chain. It reads keys through `TEEGoogleKeyUpdater`, which combines signed-snapshot updates, key storage, pause, and freshness gating behind one `getKey` interface.
 
-That updater is an explicit recovery trust root. It can replace a Google RSA modulus with an attacker key and then create tokens that the verifier accepts. The recovery delay and current-signer cancellation remain useful defenses, but they do not make updater compromise harmless.
+A measured AWS Nitro Enclave fetches Google's exact JSON Web Key Set (JWKS), terminates and authenticates TLS inside the enclave, validates the complete Google RS256 key set, canonicalizes it, and signs a narrow EIP-712 snapshot with an enclave-controlled application key. Anyone may relay the snapshot. **JWKS** is the document containing Google's current token-signing public keys; **EIP-712** is Ethereum's structured-message signing format.
 
-Ethereum cannot fetch Google's HTTPS JSON Web Key Set (JWKS). A JWKS is the document containing Google's current token-signing public keys. The updater must monitor Google's pinned endpoint and publish rotations before users need the new keys:
+The updater is still an explicit recovery trust root. A compromised accepted image or application key can publish an attacker modulus and enable forged Google claims. The recovery delay and current-signer cancellation remain useful defenses, but do not make compromise harmless.
+
+The trust assumptions are Google, Web Public Key Infrastructure, AWS Nitro hardware and attestation roots, AWS KMS, the measured image and build, the enrollment verifier and ceremony, threshold governance, the guardian, and operational availability. Nitro attestation proves that accepted measured code ran. It does not prove a fresh Google fetch. TLS authenticates the endpoint, while nonce, epoch, time, monotonicity, and freshness-lease rules constrain replay and staleness.
+
+Ethereum cannot fetch HTTPS itself. The enclave pins this endpoint policy:
 
 ```text
 https://www.googleapis.com/oauth2/v3/certs
 ```
 
-This simple updater model is deliberate. Threshold governance, automated fetch proofs, and timelocks are outside this reference adapter.
+The parent instance may proxy raw TCP bytes but must not terminate TLS or provide decoded JSON. It can censor, delay, replay, or stop traffic; the design makes no liveness guarantee. See the [TEE updater operations guide](../tee-updater/README.md).
 
 ## 2. Contracts
 
@@ -28,19 +32,23 @@ OIDCAccountFactory / OIDCRecoveryController
           GoogleJWTVerifier
                     |
                     v
-          GoogleKeyRegistry
-                    |
-                    v
-       kid hash -> RSA modulus + issue interval
+         TEEGoogleKeyUpdater
+          |              |
+          | gated getKey | internal key lifecycle
+          v              v
+      verifier     kid hash -> RSA modulus + issue interval
 ```
 
-- `GoogleKeyRegistry` accepts only 256-byte big-endian modulus encodings. `GoogleJWTVerifier` fixes the exponent to `65537` (`0x010001`).
+- `TEEGoogleKeyUpdater` accepts only 256-byte, mathematically 2048-bit, odd, big-endian modulus encodings. `GoogleJWTVerifier` fixes exponent `65537` (`0x010001`).
+- `GoogleJWTVerifier.keyRegistry()` must be the updater, which is the only key store in the TEE deployment.
+- The updater accepts only a nonempty, bounded, strictly sorted complete snapshot signed by the current attestor for the exact chain, updater, epoch, nonce, and observation time.
+- Reads fail closed before the first accepted snapshot, while paused, or after `maxRegistryStaleness`.
 - Keys are indexed by `keccak256(bytes(kid))`; the raw key identifier is not stored.
 - `validAfter <= token.iat` must hold.
 - `validUntil == 0` means no configured end. Otherwise `token.iat < validUntil` must hold.
-- `removeKey` disables a key immediately. During normal rotation, retain an old key long enough for already-issued, still-fresh tokens, then remove it.
+- A key omitted from a newer complete snapshot is retired at that observation time. A retired key that reappears starts a new interval rather than reopening the old interval.
 
-Key intervals describe when the key may have issued a token. They do not replace the token's own `iat`, `nbf`, and `exp` checks or the factory/controller's `maxClaimAge`.
+Key intervals describe when the key may have issued a token. They do not replace the token's own `iat`, `nbf`, and `exp` checks or the factory/controller's `maxClaimAge`. The updater currently retains one interval per `kidHash`; reappearance overwrites the old interval, so historical verification across multiple disjoint appearances is not preserved.
 
 ## 3. Proof encoding
 
@@ -108,12 +116,12 @@ GOOGLE_AUTHORIZED_PARTY=<android-or-ios-client-id>
 
 The server client ID must appear in `aud`, and `azp` must exactly equal the configured mobile client ID. Both become immutable parts of `providerPolicyId`.
 
-## 6. Deploy
+## 6. Deploy and enroll
 
 ```bash
 cp .env.example .env
-# Set DEPLOYER_PRIVATE_KEY, GOOGLE_KEY_UPDATER, GOOGLE_CLIENT_ID,
-# and optionally GOOGLE_AUTHORIZED_PARTY.
+# Set DEPLOYER_PRIVATE_KEY, TEE_GOVERNANCE, TEE_GUARDIAN,
+# timing policy, GOOGLE_CLIENT_ID, and optional GOOGLE_AUTHORIZED_PARTY.
 
 set -a
 source .env
@@ -123,26 +131,18 @@ forge script script/DeployGoogleJWT.s.sol:DeployGoogleJWT \
   --rpc-url "$RPC_URL" --broadcast
 ```
 
-Populate current Google keys from the pinned JWKS endpoint. Each RSA JWK provides:
+The script deploys:
 
-- `kid`: hash its UTF-8 bytes with Keccak-256;
-- `e`: confirm that it Base64URL-decodes to the verifier's fixed exponent `0x010001`;
-- `n`: Base64URL-decode to the 256-byte modulus.
+1. `TEEGoogleKeyUpdater`, owned by threshold governance and initially uninitialized;
+2. `GoogleJWTVerifier`, immutably configured to read that updater.
 
-Then submit from the configured updater:
+Verify those relationships on-chain before proceeding. The updater intentionally starts with `attestor = address(0)` and epoch `0`; the deployer cannot supply an initial attestor through the official script.
 
-```solidity
-GoogleKeyRegistry.setKey(
-    kidHash,
-    modulus,
-    validAfter,
-    validUntil
-)
-```
+Build the EIF, publish and independently review its measurements, provision a KMS-protected application key inside an accepted enclave, obtain a fresh native Nitro attestation for epoch `1`, and independently verify its AWS chain, timestamp, PCR policy, challenge, application key, chain, updater, epoch, and policy hash. Threshold governance then calls `scheduleAttestor(verifiedAddress)`, waits the immutable delay, and anyone finalizes. Follow the complete [enrollment ceremony](../tee-updater/README.md#enrollment-ceremony).
 
-Use a real observation timestamp for `validAfter`; do not backdate keys casually. Set `validUntil` when Google retires a key, allowing only the reviewed overlap needed for tokens that remain within `maxClaimAge`. Use `removeKey` for immediate emergency disablement.
+After enrollment, relay a fresh signed complete snapshot. Verify `lastFetchedAt`, `updateNonce`, and every emitted key-set event. Then use the resulting `GoogleJWTVerifier` as `OIDC_CLAIM_VERIFIER` in `script/Deploy.s.sol`.
 
-After populating keys, deploy the core with the resulting verifier address as `OIDC_CLAIM_VERIFIER` using `script/Deploy.s.sol`.
+Do not deploy a separate owner-managed `GoogleKeyRegistry` for the TEE path or construct another verifier against one. Doing so recreates arbitrary key-insertion and freshness-bypass paths that the single-store topology removes.
 
 ## 7. Privacy and cost
 
@@ -154,9 +154,11 @@ RSA and strict JSON/Base64URL processing are relatively expensive. The current p
 
 ## 8. Residual risks
 
-- Updater compromise can forge Google identity evidence.
-- Missed Google key rotation stops creation and recovery for newly signed tokens.
-- Immediate old-key removal can reject otherwise fresh tokens already in flight.
+- Enrolled image, application-key, KMS/IAM, build, attestation-verifier, or governance compromise can forge Google identity evidence.
+- Missed Google rotation, stale snapshots, pause, KMS/AWS outage, or malicious parent censorship stop OIDC creation and recovery.
+- Nitro attestation does not prove a fresh Google fetch; replay controls bound staleness but cannot supply liveness.
+- Native attestation is verified off-chain, so the threshold enrollment ceremony must not collapse to one trusted operator.
+- The one-interval store loses the old interval if the same `kidHash` disappears and later reappears.
 - Google account or provider compromise can still produce a genuinely signed recovery token.
 - `prompt=select_account` does not prove recent password, passkey, or multifactor authentication.
 - Parser, RSA integration, and target-chain precompile behavior require independent audit and chain-specific testing.

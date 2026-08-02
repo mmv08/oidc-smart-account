@@ -7,7 +7,7 @@
 - the immutable provider policy and user identity binding;
 - the ability to schedule, cancel, and finalize identity recovery;
 - OIDC ID tokens, authorization codes, stable subjects, and identity salts handled outside the core;
-- authenticity and availability of Google RSA signing keys in `GoogleKeyRegistry`;
+- authenticity and availability of Google RSA signing keys in `TEEGoogleKeyUpdater`;
 - availability of routine account execution when identity infrastructure is offline.
 
 ## 2. Adversaries
@@ -21,7 +21,9 @@ The design considers:
 - compromise of the user's Google or Apple account;
 - compromise, coercion, or failure of the OIDC provider;
 - a malicious, compromised, incorrectly configured, or unavailable `IOIDCClaimVerifier`;
-- compromise or operational failure of the project-controlled Google key updater;
+- compromise or operational failure of the TEE-backed Google key path;
+- a malicious Nitro parent instance that censors, delays, replays, or selectively relays bytes;
+- AWS Nitro, attestation-certificate, KMS/IAM, build-pipeline, enrollment, or governance compromise;
 - a malicious ERC-7913 signer-verifier contract;
 - loss or compromise of the installed independent signer;
 - stale recovery after ordinary signer rotation;
@@ -50,17 +52,25 @@ A verifier that fabricates claims can schedule arbitrary signer replacement for 
 
 A verifier outage stops new creation and identity recovery. It does not stop installed signers from executing or rotating normally.
 
-### 3.2.1 Direct Google verifier and key updater
+### 3.2.1 Direct Google verifier and TEE updater
 
-The included `GoogleJWTVerifier` is trusted to implement strict Base64URL, JSON, RS256, issuer, audience, `azp`, subject, nonce, timestamp, and identity-commitment validation correctly. A parser or signature-validation bug may convert attacker-controlled token bytes into an accepted claim.
+The included `GoogleJWTVerifier` is trusted to implement strict Base64URL, JSON, RS256, issuer, audience, `azp`, subject, nonce, timestamp, key-interval, and identity-commitment validation correctly. A parser or signature-validation bug may convert attacker-controlled token bytes into an accepted claim.
 
-`GoogleKeyRegistry` has one owner. That updater is trusted to publish only public RSA keys obtained from Google's pinned JWKS endpoint and to maintain accurate issue-time intervals. A compromised updater can install its own modulus and forge otherwise valid-looking Google tokens. A failed updater can miss rotation and make creation/recovery unavailable. These are explicit properties of the selected simple updater model.
+`TEEGoogleKeyUpdater` replaces a routine human key-insertion authority with one enrolled secp256k1 application key whose expected implementation runs inside an AWS Nitro Enclave. The measured program fetches Google's exact JWKS endpoint with TLS terminated inside the enclave, validates and canonicalizes the complete key set, and signs a narrow EIP-712 snapshot. The contract checks domain, attestor epoch, nonce, time, order, set completeness, key lifecycle, pause, and freshness before exposing keys.
+
+This is hardware-backed trust minimization, not a trustless oracle. A compromised accepted image, AWS Nitro/attestation root, Web PKI, Google endpoint, KMS/IAM policy, build pipeline, enrollment verifier, or governance ceremony can still authorize an attacker RSA modulus. That can enable forged Google claims and delayed account recovery. The recovery delay and signer cancellation remain defenses; they do not make compromise harmless.
+
+The initial attestor is zero. Threshold governance must schedule the first address and later rotations only after independently verifying a fresh native Nitro attestation that binds the application public key, PCR policy, challenge, chain, updater, epoch, and policy hash. The guardian can pause and cancel but cannot enroll, insert keys, or unpause. Native attestation is intentionally not parsed in Solidity, so the published ceremony and its verifier are critical trust components.
+
+The parent instance is untrusted for integrity. It may proxy raw TLS bytes only; hostname verification, certificate-chain validation, exact path and redirect policy, response bounds, JSON parsing, and signing stay inside the measured enclave. A parent can censor, delay, replay, or stop traffic, so liveness is never guaranteed. Nitro attestation proves accepted code execution, not a fresh Google fetch; signed timestamps, nonces, monotonic observations, submission age, and read-time staleness only constrain replay.
+
+A failed or stale updater makes `getKey` fail closed, stopping OIDC creation and recovery while installed signers continue ordinary execution. The updater stores key intervals internally, leaving no separate raw-registry address through which a verifier could bypass pause or freshness policy.
 
 ### 3.3 Smart contracts
 
 The contracts are trusted to compare normalized claims with immutable account state, bind claims to exact actions, enforce nonces/timing, verify new-key possession, and constrain recovery to signer replacement. A contract bug can defeat every higher layer.
 
-The account, factory, controller, and verifier are non-upgradeable and have no administrative owner. This removes verifier migration. The separate Google key registry intentionally has an owner for Google key rotation; that owner cannot alter routine account execution but can forge the Google identity portion of creation/recovery.
+The account, factory, controller, and verifier are non-upgradeable and have no administrative owner. This removes verifier migration. The underlying Google registry is also non-upgradeable and is owned only by `TEEGoogleKeyUpdater`; delayed governance controls attestor enrollment, rotation, and unpause but has no direct key-insertion function. Compromise of governance plus the accepted enrollment path can still select a malicious attestor.
 
 ### 3.4 Independent account signer
 
@@ -96,6 +106,11 @@ Relayers are optional and untrusted. They can copy, submit, delay, reorder, or w
 14. Routine signatures cannot replay across signer epochs, accounts, chains, nonces, targets, values, calldata, or deadlines.
 15. Failure of an ordinary target call rolls back execution-nonce consumption atomically.
 16. Ordinary execution remains independent of the provider and claim verifier.
+17. `GoogleJWTVerifier` reads only the paused/freshness-gated updater, which stores key intervals internally.
+18. A snapshot binds the complete canonical key set, observation time, attestor epoch, exact nonce, chain, and updater contract.
+19. Missing keys retire at the newer observation time; an active `kid` cannot change modulus; a reappearing key starts a new interval.
+20. The initial attestor is empty; every enrollment/rotation is delayed and observable; the guardian is stop/cancel-only.
+21. Paused, uninitialized, or stale key consumption fails closed without affecting routine account execution.
 
 ## 5. Attack analysis
 
@@ -118,7 +133,13 @@ Relayers are optional and untrusted. They can copy, submit, delay, reorder, or w
 | Google/Apple outage | Creation/recovery unavailable; routine signer operations continue. |
 | Claim verifier outage | Same availability result; installed accounts remain usable. |
 | Claim verifier compromise | Forged recovery can be scheduled; delay, monitoring, cancellation, or prior permanent disablement are the remaining defenses. |
-| Google key updater compromise | Attacker key can be registered and used to forge direct Google claims; treat the updater as a recovery authority. |
+| Enrolled enclave/application-key compromise | Attacker can sign malicious complete snapshots and forge Google identity evidence. Pause, monitoring, delayed recovery cancellation, and attestor rotation are the remaining defenses. |
+| Governance enrolls an unverified attestor | Threshold governance, public native-attestation evidence, independent PCR/build review, challenge binding, and the rotation delay are procedural defenses; the contract cannot prove reviewers acted correctly. |
+| Malicious parent substitutes JWKS JSON | Parent relays raw bytes only; TLS hostname and certificate verification plus exact endpoint parsing occur inside the measured enclave. Forgery requires breaking another trusted layer. |
+| Malicious parent censors or delays | Creation/recovery may stop; nonce/time/staleness rules constrain replay but cannot guarantee liveness. Routine account execution remains available. |
+| Replayed old signed snapshot | Exact nonce, current attestor epoch, bounded observation age, monotonic observation time, chain, and contract binding reject it. |
+| Stale, paused, or uninitialized updater | `getKey` returns no key, so OIDC paths fail closed. The TEE deployment has no separate raw registry to bypass this result. |
+| KMS ciphertext cloned into another accepted enclave | Same measured code can race publication but cannot choose arbitrary keys; least-privilege IAM, PCR policy, ciphertext protection, nonce monitoring, and one active publisher reduce liveness risk. |
 | Missed Google key rotation | Tokens signed by a new `kid` fail; routine account execution remains available. |
 | Premature old-key removal | Fresh in-flight tokens using that key fail; retain only the bounded overlap required by `maxClaimAge`. |
 | JWT algorithm confusion or duplicate protected claims | Verifier pins RS256 and rejects duplicate/malformed protected header and payload members. |
@@ -159,6 +180,11 @@ A private identity salt can reduce linkability only if the proof mechanism does 
 ## 8. Residual risks and production blockers
 
 - No professional audit, formal verification, or live-chain deployment review has been completed.
+- The TEE path has not yet been exercised in a real Nitro Enclave: no EIF/PCR publication, genuine attestation verification, KMS measurement-policy test, parent-proxy/SNI test, or production relayer test has completed.
+- Reproducible build claims remain provisional until independent Docker and EIF builds match; dependency, CA-root, Nitro TCB, AWS-root, and Google endpoint upgrades need lifecycle policy.
+- Enrollment remains a governance ceremony. Production requires a threshold owner, independent native-attestation reviewers, published evidence, and a tested guardian/incident process; a single unreviewed governance signer recreates the old unilateral trust root.
+- KMS persistence still needs approved cloning, rollback, ciphertext backup, key deletion protection, IAM rotation, measurement upgrade, revocation, and disaster-recovery procedures.
+- The registry stores one interval per `kidHash`; reappearance overwrites historical interval data. Confirm this against the maximum accepted JWT lifetime or implement interval history.
 - The direct Google verifier and proof encoding are implemented, but have not received a professional audit or live-chain deployment review. Apple live-token and on-chain JWT verification are not implemented.
 - Provider-account takeover and provider coercion remain recovery-takeover risks.
 - An immutable verifier failure can permanently remove OIDC recovery availability for existing accounts.

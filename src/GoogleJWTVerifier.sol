@@ -11,8 +11,8 @@ import { OIDCIdentity } from "./OIDCIdentity.sol";
 
 /// @title Google RS256 JWT Verifier
 /// @notice Verifies a Google ID token on-chain and returns the normalized OIDC claim used by accounts.
-/// @dev Proofs encode `(compactJwt, identitySalt)`; both values are public calldata. The registry owner
-/// can authorize arbitrary signing keys.
+/// @dev Proofs encode `(compactJwt, identitySalt)`; both values are public calldata. The immutable
+/// registry dependency must enforce the intended key-provenance, pause, and freshness policy.
 contract GoogleJWTVerifier is IOIDCClaimVerifier {
     using Bytes for bytes;
 
@@ -48,7 +48,7 @@ contract GoogleJWTVerifier is IOIDCClaimVerifier {
     /// @dev Thrown when signed claim values do not satisfy the configured policy or time checks.
     error InvalidGoogleClaims();
 
-    /// @param keyRegistry_ Registry controlled by the project's Google key updater.
+    /// @param keyRegistry_ Registry implementation enforcing the deployment's Google key-provenance policy.
     /// @param clientId Exact OAuth client ID required in the signed `aud` claim.
     /// @param authorizedParty Exact signed `azp` required for a hybrid policy, or an empty string for
     /// an ordinary web-client policy.
