@@ -114,10 +114,9 @@ contract OIDCAccountTest is Test {
         account.rotateSigner(abi.encodePacked(signer));
 
         assertEq(account.signerEpoch(), 2);
-        vm.expectRevert(OIDCAccount.InvalidSignature.selector);
-        account.executeSigned(
-            address(target), 0, callData, account.executionNonce(), deadline, oldSignature
-        );
+        uint256 currentNonce = account.executionNonce();
+        vm.expectRevert(OIDCAccount.InvalidExecutionSignature.selector);
+        account.executeSigned(address(target), 0, callData, currentNonce, deadline, oldSignature);
     }
 
     function test_addresslessERC7913SignerAuthorizesRelayedExecution() public {

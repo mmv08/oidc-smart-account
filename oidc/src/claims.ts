@@ -116,6 +116,12 @@ export function normalizeGoogleOrAppleClaims(input: NormalizeClaimsInput): Norma
   }
   const issuedAt = claims.iat as number;
   const expiresAt = claims.exp as number;
+  if (claims.nbf !== undefined && (!Number.isSafeInteger(claims.nbf) || (claims.nbf as number) < 0)) {
+    throw new Error('invalid OIDC token timing');
+  }
+  if (claims.nbf !== undefined && (claims.nbf as number) > now) {
+    throw new Error('OIDC claim is not active yet');
+  }
   if (issuedAt > now) throw new Error('OIDC claim was issued in the future');
   if (expiresAt <= now || expiresAt <= issuedAt) throw new Error('OIDC claim is expired');
   if (now - issuedAt > maxClaimAgeSeconds) throw new Error('OIDC claim is stale');

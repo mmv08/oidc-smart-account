@@ -13,10 +13,10 @@ OIDCAccountFactory / OIDCRecoveryController
                     ↓
           IOIDCClaimVerifier
                     ↓
- direct JWT | proof registry | oracle | zero-knowledge proof | other adapter
+ GoogleJWTVerifier | proof registry | oracle | zero-knowledge proof | other adapter
 ```
 
-The bottom layer is intentionally unspecified. Oracle membership, attestor thresholds, JSON Web Key Set (JWKS) publication, zero-knowledge circuits, and direct JSON Web Token (JWT) parsing are adapter concerns, not account-policy concepts.
+The account-policy core remains adapter-independent. This repository includes a direct Google JSON Web Token (JWT) adapter and a deliberately simple updater-owned Google key registry. Oracle membership, attestor thresholds, other providers, and zero-knowledge circuits remain separate adapter concerns.
 
 ## 2. Four distinct objects
 
@@ -27,9 +27,15 @@ A provider policy identifies the provider and exact OIDC client context accepted
 ```text
 providerId = keccak256(canonical issuer)
 providerPolicyId = keccak256(
-    typed OIDCPolicy(providerId, keccak256(client ID))
+    typed OIDCPolicy(
+        providerId,
+        keccak256(audience/client ID),
+        authorizedPartyHash
+    )
 )
 ```
+
+`authorizedPartyHash` is zero for Apple and ordinary Google policies. A Google hybrid policy uses `keccak256(expected azp client ID)`, so its server audience and Android/iOS authorized party are both immutable parts of the policy.
 
 The initial canonical issuers are Google (`https://accounts.google.com`) and Apple (`https://appleid.apple.com`). The TypeScript helper accepts Google's historical `accounts.google.com` issuer form and normalizes it to the canonical provider identifier.
 
@@ -127,9 +133,9 @@ executeSigned(
 )
 ```
 
-Any sender may relay an EIP-712 authorization from the installed ERC-7913 signer. The signature binds target, value, calldata hash, sequential execution nonce, deadline, chain, and exact account. Nonce consumption and the target call are atomic: a reverted target call rolls the entire transaction back.
+Any sender may relay an EIP-712 authorization from the installed ERC-7913 signer. The signature binds target, value, calldata hash, monotonic signer epoch, sequential execution nonce, deadline, chain, and exact account. The epoch changes on every signer replacement, so returning to an earlier signer cannot revive its old signatures. Nonce consumption and the target call are atomic: a reverted target call rolls the entire transaction back.
 
-The current signer can rotate normally. Address-less signers do so through a signed self-call. Only the immutable identity controller may call `replaceSignerFromIdentity`, and it must provide the exact current signer hash. The account can permanently disable identity recovery.
+The current signer can rotate normally. Address-less signers do so through a signed self-call. Only the immutable identity controller may call `replaceSignerFromIdentity`, and it must provide the exact current signer hash and epoch. The account can permanently disable identity recovery.
 
 ### 3.3 `OIDCAccountFactory`
 
@@ -164,16 +170,24 @@ Recovery is replacement-only and has two phases.
 - exact account/controller wiring;
 - recovery is enabled;
 - request nonce equals the account's current controller nonce;
-- expected signer hash equals current signer state;
+- expected signer hash and monotonic signer epoch equal current signer state;
 - complete new-signer encoding and proof of possession;
 - request validity interval;
 - matching, current normalized OIDC claim.
 
 It increments the recovery nonce immediately and stores only the exact pending replacement. Cancellation does not restore the nonce.
 
-**Finalize** is permissionless after the immutable delay and through the end of the immutable execution window. It rechecks the expected signer through `OIDCAccount`, so normal signer rotation makes stale recovery fail. Expired pending recovery cannot finalize and does not block a newer request.
+**Finalize** is permissionless after the immutable delay and through the end of the immutable execution window. The caller supplies a current replacement-key proof of possession. Finalization rechecks that proof plus the expected signer hash and monotonic signer epoch through `OIDCAccount`; rotating away and later back to the same signer cannot revive stale recovery. Expired pending recovery cannot finalize and does not block a newer request.
 
 The current signer cancels by making the account itself call `cancel(account)`, directly or through signed self-execution.
+
+### 3.5 Direct Google JWT adapter
+
+`GoogleJWTVerifier` implements `IOIDCClaimVerifier` for compact Google RS256 ID tokens. RS256 means RSA PKCS#1 v1.5 signatures over a SHA-256 digest. The verifier strictly decodes the original signed token, selects a 2048-bit RSA key by the protected `kid`, verifies the signature with OpenZeppelin's RSA implementation, parses security-relevant claims from the signed payload, and returns the normalized claim.
+
+`GoogleKeyRegistry` maps `keccak256(bytes(kid))` to exponent `65537`, a 2048-bit modulus, and an issue-time interval. Its owner is one project-controlled updater. This owner is an explicit recovery trust root: registering an attacker modulus enables forged Google claims. Ethereum cannot fetch Google's HTTPS JWKS endpoint, so key publication and rotation remain an off-chain operational responsibility.
+
+The adapter accepts `abi.encode(bytes(compactJwt), bytes32(identitySalt))`. Issuer, audience, authorized party, subject, nonce, and timestamps come from the exact signed payload; policy inputs come from immutable verifier configuration. The identity salt is a caller-supplied commitment-opening witness: it is combined with the signed subject and immutable policy, so changing it changes `identityCommitment` rather than substituting a signed claim. No caller-supplied normalized claim is trusted. See [direct Google JWT verification](DIRECT_GOOGLE_JWT.md).
 
 ## 4. Google and Apple policy
 
@@ -185,7 +199,8 @@ A concrete adapter must check at least:
 
 - issuer is `https://accounts.google.com` or the documented equivalent `accounts.google.com`, normalized canonically;
 - exact configured client ID appears in `aud`;
-- `azp` equals the client ID when multiple audiences appear, and any supplied `azp` is correct;
+- if an immutable Google hybrid authorized party is configured, `azp` equals that Android/iOS client ID while `aud` contains the server client ID;
+- otherwise, a supplied or multi-audience-required `azp` equals the configured audience client ID;
 - fixed acceptable signature algorithm and current Google verification key;
 - non-empty stable `sub`;
 - exact action-bound `nonce`;
@@ -227,9 +242,9 @@ This gives a clear trust boundary but creates an availability trade-off: if the 
 
 ## 7. Privacy
 
-The core stores only opaque hashes and does not parse or log raw OIDC fields. It cannot guarantee proof privacy:
+The account-policy core stores only opaque hashes and does not log raw OIDC fields. It cannot guarantee proof privacy:
 
-- a direct JWT adapter exposes the token and subject in public calldata;
+- the included direct JWT adapter exposes the token, subject, and identity salt in public calldata;
 - an oracle-backed registry may expose only a claim commitment;
 - a zero-knowledge adapter may hide the subject and token.
 
@@ -237,8 +252,8 @@ The selected proof adapter therefore controls part of the privacy model. Identit
 
 ## 8. Deliberate omissions
 
-- no direct Google/Apple JWT verifier;
-- no provider-key or JWKS registry;
+- no direct Apple JWT verifier;
+- no decentralized or automated Google-key updater;
 - no attestor set, quorum, epoch, or signatures;
 - no generic oracle protocol;
 - no identity-update or provider-migration action;

@@ -30,9 +30,7 @@ contract OIDCIdentityTest is Test {
 
         assertNotEq(
             OIDCIdentity.policyId(OIDCIdentity.GOOGLE_PROVIDER, audience),
-            OIDCIdentity.policyId(
-                OIDCIdentity.GOOGLE_PROVIDER, audience, authorizedParty
-            )
+            OIDCIdentity.policyId(OIDCIdentity.GOOGLE_PROVIDER, audience, authorizedParty)
         );
     }
 

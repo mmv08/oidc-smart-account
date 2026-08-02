@@ -18,6 +18,7 @@ export interface CreateRequest {
 export interface RecoveryRequest {
   account: Address;
   expectedSignerHash: Hex;
+  expectedSignerEpoch: bigint;
   newSignerHash: Hex;
   nonce: bigint;
   validAfter: bigint;
@@ -40,6 +41,7 @@ const recoveryTypes = {
   Recovery: [
     { name: 'account', type: 'address' },
     { name: 'expectedSignerHash', type: 'bytes32' },
+    { name: 'expectedSignerEpoch', type: 'uint256' },
     { name: 'newSignerHash', type: 'bytes32' },
     { name: 'nonce', type: 'uint256' },
     { name: 'validAfter', type: 'uint64' },

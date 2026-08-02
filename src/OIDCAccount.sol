@@ -25,7 +25,9 @@ contract OIDCAccount is EIP712, ReentrancyGuard, IERC1271 {
     bool public identityRecoveryEnabled = true;
 
     event Executed(address indexed target, uint256 value, bytes data);
-    event SignerRotated(bytes32 indexed oldSignerHash, uint256 indexed newSignerEpoch, bytes newSigner);
+    event SignerRotated(
+        bytes32 indexed oldSignerHash, uint256 indexed newSignerEpoch, bytes newSigner
+    );
     event IdentityRecoveryDisabled();
 
     error InvalidConfiguration();
@@ -113,13 +115,7 @@ contract OIDCAccount is EIP712, ReentrancyGuard, IERC1271 {
         return _hashTypedDataV4(
             keccak256(
                 abi.encode(
-                    EXECUTION_TYPEHASH,
-                    target,
-                    value,
-                    keccak256(data),
-                    signerEpoch,
-                    nonce,
-                    deadline
+                    EXECUTION_TYPEHASH, target, value, keccak256(data), signerEpoch, nonce, deadline
                 )
             )
         );
@@ -140,7 +136,9 @@ contract OIDCAccount is EIP712, ReentrancyGuard, IERC1271 {
         uint256 expectedSignerEpoch,
         bytes calldata newSigner
     ) external {
-        if (msg.sender != identityController) revert UnauthorizedIdentityController(msg.sender);
+        if (msg.sender != identityController) {
+            revert UnauthorizedIdentityController(msg.sender);
+        }
         if (!identityRecoveryEnabled) revert IdentityRecoveryIsDisabled();
         _replaceSigner(expectedSignerHash, expectedSignerEpoch, newSigner);
     }

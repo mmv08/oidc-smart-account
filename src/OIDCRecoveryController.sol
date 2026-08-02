@@ -142,14 +142,9 @@ contract OIDCRecoveryController is EIP712, ReentrancyGuard {
 
         recoveryNonces[request.account] = request.nonce + 1;
         uint64 executeAfter = uint64(block.timestamp) + recoveryDelay;
-        _pending[request.account] =
-            PendingRecovery(
-                request.expectedSignerHash,
-                request.expectedSignerEpoch,
-                newSigner,
-                digest,
-                executeAfter
-            );
+        _pending[request.account] = PendingRecovery(
+            request.expectedSignerHash, request.expectedSignerEpoch, newSigner, digest, executeAfter
+        );
         emit RecoveryScheduled(
             request.account,
             digest,

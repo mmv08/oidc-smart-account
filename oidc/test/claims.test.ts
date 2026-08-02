@@ -163,3 +163,22 @@ test('rejects wrong issuer audience nonce timing and missing subject', () => {
   assert.throws(() => normalize({ ...base, exp: 1_700_000_100 }), /expired/);
   assert.throws(() => normalize({ ...base, sub: '' }), /subject/);
 });
+
+test('rejects a token before its optional not-before time', () => {
+  assert.throws(() => normalizeGoogleOrAppleClaims({
+    claims: {
+      iss: 'https://appleid.apple.com',
+      aud: 'com.example.web',
+      sub: 'stable-subject',
+      nonce,
+      iat: 1_700_000_000,
+      nbf: 1_700_000_101,
+      exp: 1_700_000_700,
+    },
+    provider: 'apple',
+    clientId: 'com.example.web',
+    identitySalt: salt,
+    now: 1_700_000_100,
+    maxClaimAgeSeconds: 600,
+  }), /not active/);
+});

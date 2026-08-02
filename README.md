@@ -18,9 +18,9 @@ normalized authenticated OIDC claims
 IOIDCClaimVerifier
 ```
 
-`IOIDCClaimVerifier` is the explicit boundary for the open proof-transport problem. A concrete implementation could verify a JWT directly, read an oracle-fed registry, verify a zero-knowledge proof, or use another mechanism. This repository intentionally does not select or implement one of those mechanisms.
+`IOIDCClaimVerifier` is the explicit proof-transport boundary. The repository now includes one optional concrete adapter, `GoogleJWTVerifier`, which verifies Google RS256 ID tokens directly on-chain against a project-controlled key registry. Oracle, registry-proof, and zero-knowledge adapters can still implement the same interface.
 
-No attestor set, quorum, provider-key registry, oracle protocol, or proof-packing scheme appears in the core contracts.
+No attestor set, quorum, oracle protocol, or JWT logic appears in the account, factory, or recovery controller. The Google-specific verifier and key registry remain replaceable edge adapters.
 
 ## On-chain identity model
 
@@ -35,7 +35,11 @@ For the included Google/Apple model:
 
 ```text
 providerId = keccak256(canonical issuer)
-providerPolicyId = keccak256(typed providerId + keccak256(client ID))
+providerPolicyId = keccak256(
+    typed providerId
+    + keccak256(audience/client ID)
+    + keccak256(expected Google azp client ID), or zero when not configured
+)
 identityCommitment = keccak256(typed policyId + keccak256(sub) + salt)
 ```
 
@@ -52,6 +56,9 @@ The core remains provider-agnostic. Google and Apple policy derivation and claim
 
 - `src/IOIDCClaimVerifier.sol` — minimal normalized claim-verification boundary.
 - `src/OIDCIdentity.sol` — canonical Google/Apple identifiers and typed policy/identity commitments.
+- `src/GoogleJWTVerifier.sol` — strict Google RS256 compact-JWT verification and claim normalization.
+- `src/GoogleKeyRegistry.sol` — minimal project-controlled Google RSA-key registry.
+- `src/Base64Url.sol` / `src/GoogleJWTJson.sol` — bounded JWT decoding and strict claim parsing.
 - `src/OIDCAccount.sol` — identity-bound account with one independent ERC-7913 signer.
 - `src/OIDCAccountFactory.sol` — OIDC-authorized deterministic account creation.
 - `src/OIDCRecoveryController.sol` — delayed, cancellable, replacement-only recovery.
@@ -92,8 +99,8 @@ OIDC cannot authorize arbitrary account calls or routine transactions.
 3. The new signer proves possession of the same digest.
 4. The controller schedules only the exact signer replacement and immediately consumes the account recovery nonce.
 5. The current signer can cancel during the delay.
-6. Anyone may finalize after the delay and before the execution window expires.
-7. Finalization rechecks the expected current signer, so ordinary signer rotation makes a pending recovery stale.
+6. Anyone may finalize after the delay and before the execution window expires by supplying a current replacement-key proof of possession.
+7. Finalization rechecks the expected signer hash, monotonic signer epoch, and replacement proof. Rotating away and back cannot revive a stale recovery.
 
 Recovery supports **replacement only**. OIDC cannot silently expand signer authority by adding another key.
 
@@ -108,7 +115,7 @@ The core checks action authorization independently. The verifier should answer o
 - what exact nonce did the provider sign?
 - when was the claim issued and when does it expire?
 
-A direct-JWT adapter would put token material in public calldata. A privacy-preserving adapter could return the same normalized claim without exposing the token or subject. Privacy therefore depends partly on the selected adapter.
+The included direct-JWT adapter puts the compact token, stable subject, and identity salt in public calldata. A privacy-preserving adapter could return the same normalized claim without exposing those values. Do not use the direct adapter if that disclosure is unacceptable.
 
 ## Build and test
 
@@ -120,7 +127,7 @@ Pinned contract toolchain:
 - forge-std 1.16.2
 
 ```bash
-cd /home/mmv/oidc-smart-account
+cd oidc-smart-account
 forge fmt --check
 forge build --sizes
 forge test -vv
@@ -133,7 +140,9 @@ npm run build
 npm audit --audit-level=high
 ```
 
-The tests use a deterministic in-contract claim-verifier mock. They prove the behavior of the protocol boundary, not authentic Google or Apple signature verification.
+The TypeScript end-to-end test runs a real simulated OIDC authorization server in-process and exercises discovery, Authorization Code + PKCE, redirect state, token exchange, RS256/JWKS verification, and exact recovery-nonce normalization. A runnable Google Cloud example and registration guide live at [`oidc/examples/google/`](oidc/examples/google/README.md).
+
+The core policy tests use a deterministic claim-verifier mock. Separate direct-verifier tests use public 2048-bit RSA fixtures and real RS256 signatures to exercise on-chain signature, Base64URL, protected-header, JSON-claim, audience/`azp`, timing, key-epoch, and identity-commitment validation. They do not claim a live Google login without configured credentials.
 
 ## Reference deployment
 
@@ -147,14 +156,14 @@ RECOVERY_WINDOW
 MAX_CLAIM_AGE
 ```
 
-`OIDC_CLAIM_VERIFIER` must already be deployed and independently reviewed. See `.env.example`.
+For the direct Google path, first deploy `script/DeployGoogleJWT.s.sol`, populate its registry from Google's pinned JWKS endpoint, and use the resulting `GoogleJWTVerifier` as `OIDC_CLAIM_VERIFIER`. See [direct Google JWT verification](docs/DIRECT_GOOGLE_JWT.md) and `.env.example`.
 
 ## Deliberate exclusions
 
 - no ERC-4337 EntryPoint, bundler, paymaster, or UserOperation;
 - no oracle or attestor network;
-- no provider-key governance or JSON Web Key Set (JWKS) registry;
-- no direct JWT parser or signature verifier;
+- no automated or decentralized Google-key updater; the included registry has one explicit owner;
+- no direct Apple JWT verifier;
 - no raw token or email as permanent identity;
 - no OIDC authorization of routine execution;
 - no proxy or upgrade authority;

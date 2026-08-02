@@ -7,6 +7,7 @@
 - the immutable provider policy and user identity binding;
 - the ability to schedule, cancel, and finalize identity recovery;
 - OIDC ID tokens, authorization codes, stable subjects, and identity salts handled outside the core;
+- authenticity and availability of Google RSA signing keys in `GoogleKeyRegistry`;
 - availability of routine account execution when identity infrastructure is offline.
 
 ## 2. Adversaries
@@ -20,6 +21,7 @@ The design considers:
 - compromise of the user's Google or Apple account;
 - compromise, coercion, or failure of the OIDC provider;
 - a malicious, compromised, incorrectly configured, or unavailable `IOIDCClaimVerifier`;
+- compromise or operational failure of the project-controlled Google key updater;
 - a malicious ERC-7913 signer-verifier contract;
 - loss or compromise of the installed independent signer;
 - stale recovery after ordinary signer rotation;
@@ -48,11 +50,17 @@ A verifier that fabricates claims can schedule arbitrary signer replacement for 
 
 A verifier outage stops new creation and identity recovery. It does not stop installed signers from executing or rotating normally.
 
+### 3.2.1 Direct Google verifier and key updater
+
+The included `GoogleJWTVerifier` is trusted to implement strict Base64URL, JSON, RS256, issuer, audience, `azp`, subject, nonce, timestamp, and identity-commitment validation correctly. A parser or signature-validation bug may convert attacker-controlled token bytes into an accepted claim.
+
+`GoogleKeyRegistry` has one owner. That updater is trusted to publish only public RSA keys obtained from Google's pinned JWKS endpoint and to maintain accurate issue-time intervals. A compromised updater can install its own modulus and forge otherwise valid-looking Google tokens. A failed updater can miss rotation and make creation/recovery unavailable. These are explicit properties of the selected simple updater model.
+
 ### 3.3 Smart contracts
 
 The contracts are trusted to compare normalized claims with immutable account state, bind claims to exact actions, enforce nonces/timing, verify new-key possession, and constrain recovery to signer replacement. A contract bug can defeat every higher layer.
 
-The contracts are non-upgradeable and have no administrative owner. This removes governance takeover but also removes verifier migration.
+The account, factory, controller, and verifier are non-upgradeable and have no administrative owner. This removes verifier migration. The separate Google key registry intentionally has an owner for Google key rotation; that owner cannot alter routine account execution but can forge the Google identity portion of creation/recovery.
 
 ### 3.4 Independent account signer
 
@@ -75,17 +83,17 @@ Relayers are optional and untrusted. They can copy, submit, delay, reorder, or w
 1. OIDC evidence is never accepted by routine `execute`, `executeSigned`, or ERC-1271 validation.
 2. Every account has one immutable controller, provider policy, and identity commitment.
 3. Creation binds the predicted account, deployment salt, complete initial signer, identity, validity interval, chain, and exact factory.
-4. Recovery binds the account, exact controller, current signer hash, complete new signer, per-account recovery nonce, validity interval, and chain.
+4. Recovery binds the account, exact controller, current signer hash and epoch, complete new signer, per-account recovery nonce, validity interval, and chain.
 5. The provider-authenticated nonce equals the exact EIP-712 action digest.
 6. The controller, not the proof verifier, decides which account state transition is permitted.
-7. A new signer proves possession of the exact create or recovery digest before deployment or scheduling.
+7. A new signer proves possession of the exact create or recovery digest before deployment or scheduling; recovery checks that proof again at finalization because contract/verifier validity can change.
 8. Recovery only replaces a signer. It cannot call arbitrary targets, transfer value, or add parallel authority.
 9. Recovery cannot finalize before its delay and can be cancelled by the current signer.
 10. A cancelled recovery nonce remains consumed.
-11. Finalization rechecks current signer state; stale recovery cannot overwrite a later ordinary signer rotation.
+11. Finalization rechecks the signer hash and monotonic signer epoch; rotating away and back cannot revive stale recovery or execution signatures.
 12. Pending recovery expires and cannot permanently block a replacement request.
 13. Recovery disabled by an account cannot be re-enabled.
-14. Routine signatures cannot replay across accounts, chains, nonces, targets, values, calldata, or deadlines.
+14. Routine signatures cannot replay across signer epochs, accounts, chains, nonces, targets, values, calldata, or deadlines.
 15. Failure of an ordinary target call rolls back execution-nonce consumption atomically.
 16. Ordinary execution remains independent of the provider and claim verifier.
 
@@ -101,7 +109,7 @@ Relayers are optional and untrusted. They can copy, submit, delay, reorder, or w
 | Reuse proof for another identity | Account policy/identity comparison fails. |
 | Reuse proof for another recovery | Current recovery nonce and action digest differ. |
 | Cancel then replay recovery | Cancellation leaves the incremented recovery nonce consumed. |
-| Replace signer before recovery finalizes | Expected-signer recheck makes pending recovery stale. |
+| Replace signer before recovery finalizes, then rotate back | Expected signer hash plus monotonic signer epoch makes pending recovery stale. |
 | Front-run recovery schedule/finalize | Only the already authenticated exact replacement occurs. |
 | Finalize very old recovery | Bounded execution window rejects it. |
 | Malicious relayer edits routine execution | EIP-712 signature binds target, value, calldata hash, nonce, deadline, account, and chain. |
@@ -110,6 +118,11 @@ Relayers are optional and untrusted. They can copy, submit, delay, reorder, or w
 | Google/Apple outage | Creation/recovery unavailable; routine signer operations continue. |
 | Claim verifier outage | Same availability result; installed accounts remain usable. |
 | Claim verifier compromise | Forged recovery can be scheduled; delay, monitoring, cancellation, or prior permanent disablement are the remaining defenses. |
+| Google key updater compromise | Attacker key can be registered and used to forge direct Google claims; treat the updater as a recovery authority. |
+| Missed Google key rotation | Tokens signed by a new `kid` fail; routine account execution remains available. |
+| Premature old-key removal | Fresh in-flight tokens using that key fail; retain only the bounded overlap required by `maxClaimAge`. |
+| JWT algorithm confusion or duplicate protected claims | Verifier pins RS256 and rejects duplicate/malformed protected header and payload members. |
+| Caller supplies a valid signature beside substituted claims | Verifier derives issuer, audience, authorized party, subject, nonce, and timestamps from the exact RSA-signed payload, and policy inputs from immutable configuration. The caller supplies only the identity-salt commitment witness; changing it changes the derived commitment and cannot substitute the signed subject. |
 | Provider-account takeover | Attacker can satisfy provider identity and may schedule recovery; delay and cancellation are the remaining defenses. |
 | Malicious frontend | Cannot substitute fields after a bound claim, but can socially engineer authentication for a harmful exact action. |
 | Always-valid ERC-7913 verifier | Proof of possession and later account signatures become meaningless for that selected signer. Only use reviewed immutable signer verifiers. |
@@ -139,14 +152,14 @@ The core reveals:
 - signer hashes and recovery timing through calls and events;
 - arbitrary proof bytes supplied in transaction calldata.
 
-The core does not itself decode or store a raw JWT, subject, email, name, or profile. That does **not** guarantee privacy. A direct-token proof places those values in public calldata. Privacy depends on the concrete verifier and proof encoding.
+The account-policy core does not store or emit a raw JWT, subject, email, name, or profile. The included direct-token proof nevertheless places the complete token and identity salt in public transaction calldata. Its signed payload exposes the stable subject and every optional claim Google included.
 
 A private identity salt can reduce linkability only if the proof mechanism does not reveal it. The public CREATE2 deployment salt is separate and provides no identity privacy.
 
 ## 8. Residual risks and production blockers
 
 - No professional audit, formal verification, or live-chain deployment review has been completed.
-- No concrete Google or Apple proof verifier is included, so the repository does not independently authenticate real provider tokens.
+- The direct Google verifier and proof encoding are implemented, but have not received a professional audit or live-chain deployment review. Apple live-token and on-chain JWT verification are not implemented.
 - Provider-account takeover and provider coercion remain recovery-takeover risks.
 - An immutable verifier failure can permanently remove OIDC recovery availability for existing accounts.
 - There is no identity migration for Apple developer-team transfers, provider client-ID changes, or subject-policy changes.
@@ -156,7 +169,7 @@ A private identity salt can reduce linkability only if the proof mechanism does 
 - Human comprehension cannot be proven by nonce binding.
 - Threshold-one signer policy means one compromised installed signer has full authority.
 - Address-less verifier contracts require separate review and lifecycle policy.
-- Direct-JWT, registry, oracle, and zero-knowledge adapters each introduce additional unmodeled threats.
+- The direct-JWT parser, updater-owned registry, RSA gas usage, and target-chain modular-exponentiation precompile add adapter-specific risks; oracle and zero-knowledge alternatives introduce different risks.
 - Same-chain-ID forks may reproduce pre-fork state and signatures.
 - Gas behavior, P-256/WebAuthn support, and precompile behavior require testing on every target chain.
 

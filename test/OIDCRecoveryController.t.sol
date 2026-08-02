@@ -6,7 +6,11 @@ import { IERC1271 } from "@openzeppelin/contracts/interfaces/IERC1271.sol";
 import { IOIDCClaimVerifier } from "../src/IOIDCClaimVerifier.sol";
 import { OIDCAccount } from "../src/OIDCAccount.sol";
 import { OIDCRecoveryController } from "../src/OIDCRecoveryController.sol";
-import { TestOIDCClaimVerifier, TestERC7913Verifier } from "./helpers/TestVerifiers.sol";
+import {
+    RevocableTestERC7913Verifier,
+    TestOIDCClaimVerifier,
+    TestERC7913Verifier
+} from "./helpers/TestVerifiers.sol";
 
 contract OIDCRecoveryControllerTest is Test {
     uint256 internal currentPk = 0xA11CE;
@@ -48,7 +52,7 @@ contract OIDCRecoveryControllerTest is Test {
         assertEq(controller.recoveryNonces(address(account)), 1);
 
         vm.warp(block.timestamp + 2 days);
-        controller.finalize(address(account));
+        controller.finalize(address(account), _sign(replacementPk, digest));
 
         assertEq(account.signer(), newSigner);
         assertEq(controller.getPending(address(account)).executeAfter, 0);
@@ -64,7 +68,7 @@ contract OIDCRecoveryControllerTest is Test {
 
         controller.schedule(request, newSigner, _sign(keyPk, digest), hex"01");
         vm.warp(block.timestamp + 2 days);
-        controller.finalize(address(account));
+        controller.finalize(address(account), _sign(keyPk, digest));
 
         bytes32 message = keccak256("recovered-addressless-message");
         assertEq(account.signer(), newSigner);
@@ -72,6 +76,28 @@ contract OIDCRecoveryControllerTest is Test {
             account.isValidSignature(message, _sign(keyPk, message)),
             IERC1271.isValidSignature.selector
         );
+    }
+
+    function test_finalizeRevalidatesDynamicSignerProofOfPossession() public {
+        uint256 keyPk = 0x9292;
+        RevocableTestERC7913Verifier signerVerifier = new RevocableTestERC7913Verifier();
+        bytes memory newSigner = abi.encodePacked(address(signerVerifier), vm.addr(keyPk));
+        OIDCRecoveryController.RecoveryRequest memory request = _request(newSigner);
+        bytes32 digest = controller.hashRecovery(request);
+        bytes memory proof = _sign(keyPk, digest);
+        _setFreshClaim(digest);
+
+        controller.schedule(request, newSigner, proof, hex"01");
+        signerVerifier.setEnabled(false);
+        vm.warp(block.timestamp + 2 days);
+
+        vm.expectRevert(OIDCRecoveryController.InvalidProofOfPossession.selector);
+        controller.finalize(address(account), proof);
+        assertEq(controller.getPending(address(account)).digest, digest);
+
+        signerVerifier.setEnabled(true);
+        controller.finalize(address(account), proof);
+        assertEq(account.signer(), newSigner);
     }
 
     function test_claimMustMatchPolicyIdentityNonceAndFreshness() public {
@@ -146,10 +172,12 @@ contract OIDCRecoveryControllerTest is Test {
 
         vm.prank(vm.addr(currentPk));
         account.rotateSigner(abi.encodePacked(vm.addr(0xCAFE)));
+        vm.prank(vm.addr(0xCAFE));
+        account.rotateSigner(abi.encodePacked(vm.addr(currentPk)));
         vm.warp(block.timestamp + 2 days);
 
         vm.expectRevert(OIDCAccount.StaleSigner.selector);
-        controller.finalize(address(account));
+        controller.finalize(address(account), _sign(replacementPk, digest));
     }
 
     function test_expiredPendingRecoveryDoesNotBlockReplacementRequest() public {
@@ -182,9 +210,10 @@ contract OIDCRecoveryControllerTest is Test {
         controller.schedule(request, newSigner, _sign(replacementPk, digest), hex"01");
 
         bytes32 currentSignerHash = account.signerHash();
+        uint256 currentSignerEpoch = account.signerEpoch();
         vm.expectRevert(OIDCAccount.IdentityRecoveryIsDisabled.selector);
         vm.prank(address(controller));
-        account.replaceSignerFromIdentity(currentSignerHash, account.signerEpoch(), newSigner);
+        account.replaceSignerFromIdentity(currentSignerHash, currentSignerEpoch, newSigner);
     }
 
     function test_hashRecoveryMatchesTypeScriptGoldenVector() public {
@@ -197,6 +226,7 @@ contract OIDCRecoveryControllerTest is Test {
                 expectedSignerHash: bytes32(
                     uint256(0x0505050505050505050505050505050505050505050505050505050505050505)
                 ),
+                expectedSignerEpoch: 6,
                 newSignerHash: bytes32(
                     uint256(0x0606060606060606060606060606060606060606060606060606060606060606)
                 ),
@@ -207,7 +237,7 @@ contract OIDCRecoveryControllerTest is Test {
 
         assertEq(
             OIDCRecoveryController(goldenController).hashRecovery(request),
-            0xd11febaa9f236538b9c92fec125317bacdec3c19430b67bb1ffde4c55d3ff2fb
+            0x3a54924d67fac035e66338cb6b3f15715a09804057930d4069bc09ad8f9532f5
         );
     }
 
@@ -219,6 +249,7 @@ contract OIDCRecoveryControllerTest is Test {
         return OIDCRecoveryController.RecoveryRequest({
             account: address(account),
             expectedSignerHash: account.signerHash(),
+            expectedSignerEpoch: account.signerEpoch(),
             newSignerHash: keccak256(newSigner),
             nonce: controller.recoveryNonces(address(account)),
             validAfter: uint64(block.timestamp),

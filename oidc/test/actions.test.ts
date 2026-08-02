@@ -22,6 +22,7 @@ const create: CreateRequest = {
 const recovery: RecoveryRequest = {
   account: create.account,
   expectedSignerHash: `0x${'05'.repeat(32)}`,
+  expectedSignerEpoch: 6n,
   newSignerHash: `0x${'06'.repeat(32)}`,
   nonce: 7n,
   validAfter: create.validAfter,
@@ -50,12 +51,16 @@ test('OIDC nonce is the exact recovery digest and binds current signer state', (
   const digest = recoveryDigest(recovery, 1n, controller);
   assert.equal(
     digest,
-    '0xd11febaa9f236538b9c92fec125317bacdec3c19430b67bb1ffde4c55d3ff2fb',
+    '0x3a54924d67fac035e66338cb6b3f15715a09804057930d4069bc09ad8f9532f5',
   );
   assert.equal(recoveryOidcNonce(recovery, 1n, controller), digest);
   assert.notEqual(
     digest,
     recoveryDigest({ ...recovery, expectedSignerHash: `0x${'ff'.repeat(32)}` }, 1n, controller),
+  );
+  assert.notEqual(
+    digest,
+    recoveryDigest({ ...recovery, expectedSignerEpoch: 7n }, 1n, controller),
   );
   assert.notEqual(digest, recoveryDigest({ ...recovery, nonce: 8n }, 1n, controller));
 });

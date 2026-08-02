@@ -9,10 +9,9 @@ library OIDCIdentity {
     bytes32 internal constant GOOGLE_PROVIDER = keccak256("https://accounts.google.com");
     bytes32 internal constant APPLE_PROVIDER = keccak256("https://appleid.apple.com");
 
-    bytes32 internal constant POLICY_TYPEHASH =
-        keccak256(
-            "OIDCPolicy(bytes32 providerId,bytes32 audienceHash,bytes32 authorizedPartyHash)"
-        );
+    bytes32 internal constant POLICY_TYPEHASH = keccak256(
+        "OIDCPolicy(bytes32 providerId,bytes32 audienceHash,bytes32 authorizedPartyHash)"
+    );
     bytes32 internal constant IDENTITY_TYPEHASH =
         keccak256("OIDCIdentity(bytes32 policyId,bytes32 subjectHash,bytes32 salt)");
 
@@ -22,15 +21,13 @@ library OIDCIdentity {
 
     /// @notice Derives a policy for a Google hybrid client with an exact `azp` client ID.
     /// @dev `authorizedPartyHash` is zero for ordinary Google and Apple policies.
-    function policyId(
-        bytes32 providerId,
-        bytes32 audienceHash,
-        bytes32 authorizedPartyHash
-    ) internal pure returns (bytes32) {
+    function policyId(bytes32 providerId, bytes32 audienceHash, bytes32 authorizedPartyHash)
+        internal
+        pure
+        returns (bytes32)
+    {
         if (providerId == bytes32(0) || audienceHash == bytes32(0)) revert InvalidIdentityInput();
-        return keccak256(
-            abi.encode(POLICY_TYPEHASH, providerId, audienceHash, authorizedPartyHash)
-        );
+        return keccak256(abi.encode(POLICY_TYPEHASH, providerId, audienceHash, authorizedPartyHash));
     }
 
     /// @notice Creates an account-scoped commitment to a stable OIDC subject.

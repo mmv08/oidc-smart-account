@@ -13,6 +13,7 @@ bytecode_hash = "none"
 cbor_metadata = false
 fuzz = { runs = 2048 }
 invariant = { runs = 512, depth = 64, fail_on_revert = false }
+fs_permissions = [{ access = "read", path = "./test/fixtures" }]
 
 [fmt]
 line_length = 100

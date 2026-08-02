@@ -6,6 +6,7 @@ import { OIDCAccount } from "../src/OIDCAccount.sol";
 
 contract OIDCAccountSignerHandler is Test {
     OIDCAccount internal immutable account;
+    uint256 public rotations;
 
     constructor(OIDCAccount account_) {
         account = account_;
@@ -18,6 +19,7 @@ contract OIDCAccountSignerHandler is Test {
         if (next == currentAddress || next == address(account)) return;
         vm.prank(currentAddress);
         account.rotateSigner(abi.encodePacked(next));
+        rotations++;
     }
 }
 
@@ -27,10 +29,11 @@ contract OIDCAccountInvariantTest is Test {
     address internal constant CONTROLLER = address(0xC011);
 
     OIDCAccount internal account;
+    OIDCAccountSignerHandler internal handler;
 
     function setUp() public {
         account = new OIDCAccount(CONTROLLER, POLICY, IDENTITY, abi.encodePacked(address(0xA11CE)));
-        OIDCAccountSignerHandler handler = new OIDCAccountSignerHandler(account);
+        handler = new OIDCAccountSignerHandler(account);
         targetContract(address(handler));
     }
 
@@ -45,5 +48,9 @@ contract OIDCAccountInvariantTest is Test {
         assertEq(current.length, 20);
         assertGt(uint160(address(bytes20(current))), 0xff);
         assertEq(account.signerHash(), keccak256(current));
+    }
+
+    function invariant_signerEpochCountsEverySuccessfulRotation() public view {
+        assertEq(account.signerEpoch(), handler.rotations());
     }
 }
