@@ -30,8 +30,9 @@ contract JWKSRegistry is Ownable, EIP712 {
     bytes32 public immutable jwksUriHash;
     /// @notice Address of the TEE key that signs snapshots.
     address public attestor;
-    /// @notice Time at which the TEE got the current key set, or zero if there is no key set.
-    uint64 public fetchedAt;
+    /// @notice Time at which the TEE got the current key set, or the time of the last
+    /// `setAttestor`. A new snapshot must not be older than this time.
+    uint256 public fetchedAt;
 
     bytes32[] private _kidHashes;
     mapping(bytes32 kidHash => bytes modulus) private _moduli;
@@ -43,9 +44,9 @@ contract JWKSRegistry is Ownable, EIP712 {
 
     /// @notice The signature is not from the attestor.
     error InvalidSignature();
-    /// @notice The snapshot is not newer than the current key set.
+    /// @notice The snapshot is older than `fetchedAt`.
     error OldKeySet();
-    /// @notice The key set is older than `MAX_KEY_SET_AGE`, or there is no key set.
+    /// @notice The key set is older than `MAX_KEY_SET_AGE`.
     error StaleKeySet();
     /// @notice The current key set does not contain the key.
     error UnknownKey();
@@ -57,30 +58,30 @@ contract JWKSRegistry is Ownable, EIP712 {
     }
 
     /// @notice Sets the TEE key that signs snapshots.
-    /// @dev This also removes the current key set from use, because the old attestor signed it.
-    /// The new attestor must send a new snapshot. Use the zero address to stop all updates.
+    /// @dev This also removes the current keys, because the old attestor signed them. The new
+    /// attestor must send a snapshot that is not older than this change. Thus a snapshot from before
+    /// the change cannot put back a removed key, even if the owner sets the same attestor again. Use
+    /// the zero address to stop all updates.
     function setAttestor(address newAttestor) external onlyOwner {
         attestor = newAttestor;
-        fetchedAt = 0;
+        _clearKeys();
+        fetchedAt = block.timestamp;
         emit AttestorSet(newAttestor);
     }
 
     /// @notice Replaces the key set with a snapshot that the attestor signed.
-    /// @dev Anyone can send the snapshot. A snapshot must be newer than the current key set, so an
-    /// old snapshot cannot put back a key that the issuer removed.
+    /// @dev Anyone can send the snapshot. A snapshot must not be older than the current key set, so
+    /// an old snapshot cannot put back a key that the issuer removed.
     /// @param keys All keys in the JWKS at `fetchTime`.
     /// @param fetchTime Time at which the TEE got the JWKS, in Unix seconds.
     /// @param signature Attestor signature of `hashKeySet(keys, fetchTime)`.
     function updateKeys(Key[] calldata keys, uint64 fetchTime, bytes calldata signature) external {
-        if (fetchTime <= fetchedAt) revert OldKeySet();
+        if (fetchTime < fetchedAt) revert OldKeySet();
         if (ECDSA.recover(hashKeySet(keys, fetchTime), signature) != attestor) {
             revert InvalidSignature();
         }
 
-        for (uint256 i = 0; i < _kidHashes.length; ++i) {
-            delete _moduli[_kidHashes[i]];
-        }
-        delete _kidHashes;
+        _clearKeys();
         for (uint256 i = 0; i < keys.length; ++i) {
             bytes32 kidHash = keccak256(bytes(keys[i].kid));
             _moduli[kidHash] = keys[i].modulus;
@@ -93,7 +94,7 @@ contract JWKSRegistry is Ownable, EIP712 {
     /// @notice Returns the RSA modulus of a key in the current key set.
     /// @param kidHash Keccak-256 hash of the key ID.
     function getKey(bytes32 kidHash) external view returns (bytes memory modulus) {
-        if (fetchedAt == 0 || block.timestamp > fetchedAt + MAX_KEY_SET_AGE) revert StaleKeySet();
+        if (block.timestamp > fetchedAt + MAX_KEY_SET_AGE) revert StaleKeySet();
         modulus = _moduli[kidHash];
         if (modulus.length == 0) revert UnknownKey();
     }
@@ -113,5 +114,12 @@ contract JWKSRegistry is Ownable, EIP712 {
                 )
             )
         );
+    }
+
+    function _clearKeys() private {
+        for (uint256 i = 0; i < _kidHashes.length; ++i) {
+            delete _moduli[_kidHashes[i]];
+        }
+        delete _kidHashes;
     }
 }

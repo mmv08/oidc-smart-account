@@ -27,6 +27,10 @@ deploy() {
 }
 send() { cast send --rpc-url "$RPC_URL" "$@" >/dev/null; }
 
+# Stop if the ports are in use. Otherwise the demo can use another node or another issuer.
+if cast chain-id --rpc-url "$RPC_URL" >/dev/null 2>&1 || curl -s "$JWKS_URI" >/dev/null; then
+  echo "error: port 8545 or 9000 is in use" >&2 && exit 1
+fi
 forge build --quiet
 cargo build --quiet --manifest-path tee-updater/Cargo.toml
 anvil --silent &

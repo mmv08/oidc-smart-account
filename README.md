@@ -45,7 +45,7 @@ flowchart TB
 
 | Contract | Function |
 | --- | --- |
-| [`JWKSRegistry`](src/JWKSRegistry.sol) | Keeps the RSA keys of one issuer. It accepts a key set only if the attestor signed it for the JWKS URI of the registry. The key set must also be newer than the current key set. `getKey` reverts when the key set is older than one day. |
+| [`JWKSRegistry`](src/JWKSRegistry.sol) | Keeps the RSA keys of one issuer. It accepts a key set only if the attestor signed it for the JWKS URI of the registry. The key set must not be older than the current key set or than the last `setAttestor`. `setAttestor` removes the current keys. `getKey` reverts when the key set is older than one day. |
 | [`JWTVerifier`](src/JWTVerifier.sol) | Verifies an RS256 JWT for one issuer and one audience (OAuth client ID). It returns the hashes of `sub` and `nonce`. [`JWTParser`](src/JWTParser.sol) reads the JSON. |
 | [`OIDCAccount`](src/OIDCAccount.sol) | Account of one user. `setSigner(jwt, signer)` sets the signer. `execute(target, value, data)` sends a call from the account. |
 
@@ -82,7 +82,7 @@ git submodule update --init
 ./demo/run.sh
 ```
 
-The script deploys the contracts, sets the attestor, publishes the mock JWKS, and deploys the account of the user `alice`. Then it sets a signer with a JWT, sends 0.5 ETH from the account, and shows that the same JWT does not work a second time. `setSigner` uses approximately 420,000 gas.
+The script deploys the contracts, sets the attestor, publishes the mock JWKS, and deploys the account of the user `alice`. Then it sets a signer with a JWT, sends 0.5 ETH from the account, and shows that the same JWT does not work a second time. `setSigner` uses approximately 427,000 gas.
 
 ## Build and test
 

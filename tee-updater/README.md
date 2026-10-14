@@ -35,7 +35,7 @@ REGISTRY="$REGISTRY" SNAPSHOT="$(cat snapshot.json)" forge script script/UpdateK
 
 ## Enclave mode
 
-You need an EC2 instance with Nitro Enclaves, `nitro-cli`, `vsock-proxy`, and Docker.
+You need an EC2 instance with Nitro Enclaves, `nitro-cli`, `vsock-proxy`, Docker, Python 3, and Foundry. You also need a second computer that you trust, because the parent instance is not trusted. Run the commands in the repository root.
 
 1. Build the Docker image and the enclave image file (EIF):
 
@@ -44,7 +44,7 @@ You need an EC2 instance with Nitro Enclaves, `nitro-cli`, `vsock-proxy`, and Do
    nitro-cli build-enclave --docker-uri tee-updater --output-file tee-updater.eif
    ```
 
-   Write down PCR0, PCR1, and PCR2 from the output.
+   The output shows PCR0, PCR1, and PCR2. For the enrollment, use PCR values from a build that you trust. For example, build the EIF on the trusted computer and copy it to the parent instance. Do not trust values that the parent instance shows.
 
 2. Start the proxy from the enclave to the JWKS host. The allowlist in [`vsock-proxy.yaml`](vsock-proxy.yaml) must contain the host.
 
@@ -60,17 +60,28 @@ You need an EC2 instance with Nitro Enclaves, `nitro-cli`, `vsock-proxy`, and Do
 
    Write down the `EnclaveCID`.
 
-4. Enroll the attestor. Use a new random challenge each time.
+4. Enroll the attestor. On the trusted computer, make a new random challenge:
 
    ```bash
    CHALLENGE=0x$(openssl rand -hex 32)
-   python3 tee-updater/scripts/request.py --cid "$CID" \
-     "{\"operation\":\"attest\",\"challenge\":\"$CHALLENGE\"}" > attestation.json
-   cargo run --release --bin verify-attestation -- --response attestation.json \
-     --challenge "$CHALLENGE" --pcr0 "$PCR0" --pcr1 "$PCR1" --pcr2 "$PCR2"
    ```
 
-   `verify-attestation` verifies the AWS signature and the certificate chain of the document. Then it compares the PCRs, the challenge, and the time, and it shows the attestor address. Run it on a computer that you trust. Then the owner sets the attestor:
+   On the parent instance, ask the enclave for an attestation with this challenge:
+
+   ```bash
+   python3 tee-updater/scripts/request.py --cid "$CID" \
+     "{\"operation\":\"attest\",\"challenge\":\"$CHALLENGE\"}" > attestation.json
+   ```
+
+   Copy `attestation.json` to the trusted computer and verify it there:
+
+   ```bash
+   ATTESTOR=$(cargo run --quiet --release --manifest-path tee-updater/Cargo.toml \
+     --bin verify-attestation -- --response attestation.json \
+     --challenge "$CHALLENGE" --pcr0 "$PCR0" --pcr1 "$PCR1" --pcr2 "$PCR2")
+   ```
+
+   `verify-attestation` verifies the AWS signature and the certificate chain of the document. Then it compares the PCRs, the challenge, and the time, and it shows the attestor address. Then the owner sets the attestor:
 
    ```bash
    cast send "$REGISTRY" "setAttestor(address)" "$ATTESTOR" --rpc-url "$RPC_URL" --private-key "$OWNER_KEY"
@@ -80,12 +91,12 @@ You need an EC2 instance with Nitro Enclaves, `nitro-cli`, `vsock-proxy`, and Do
 
    ```bash
    python3 tee-updater/scripts/request.py --cid "$CID" \
-     "{\"operation\":\"sign\",\"jwksUri\":\"https://www.googleapis.com/oauth2/v3/certs\",\"chainId\":1,\"registry\":\"$REGISTRY\"}" > snapshot.json
+     "{\"operation\":\"sign\",\"jwksUri\":\"https://www.googleapis.com/oauth2/v3/certs\",\"chainId\":$CHAIN_ID,\"registry\":\"$REGISTRY\"}" > snapshot.json
    REGISTRY="$REGISTRY" SNAPSHOT="$(cat snapshot.json)" forge script script/UpdateKeys.s.sol \
      --rpc-url "$RPC_URL" --private-key "$PRIVATE_KEY" --broadcast
    ```
 
-When the enclave starts again, it has a new key. Do step 4 again.
+When the enclave starts again, it has a new key. Do step 4 again. `setAttestor` removes the keys of the old attestor, so send a new key set immediately after it.
 
 ## Code
 
@@ -99,6 +110,7 @@ When the enclave starts again, it has a new key. Do step 4 again.
 | [`scripts/request.py`](scripts/request.py) | Sends one request to the enclave from the parent instance |
 
 ```bash
+cd tee-updater
 cargo fmt --check
 cargo clippy --all-targets -- -D warnings
 cargo test

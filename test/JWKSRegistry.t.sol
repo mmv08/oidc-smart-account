@@ -34,9 +34,9 @@ contract JWKSRegistryTest is TestBase {
         registry.updateKeys(keys, fetchedAt, signature);
     }
 
-    function test_rejectsReplayOfOldKeySet() public {
+    function test_rejectsKeySetOlderThanCurrentKeySet() public {
         JWKSRegistry.Key[] memory keys = MockIssuer.keys();
-        uint64 fetchedAt = registry.fetchedAt();
+        uint64 fetchedAt = uint64(registry.fetchedAt()) - 1;
         bytes memory signature = signKeySet(ATTESTOR_KEY, keys, fetchedAt);
 
         vm.expectRevert(JWKSRegistry.OldKeySet.selector);
@@ -66,7 +66,7 @@ contract JWKSRegistryTest is TestBase {
         uint256 newAttestorKey = 0xB0B;
         registry.setAttestor(vm.addr(newAttestorKey));
 
-        vm.expectRevert(JWKSRegistry.StaleKeySet.selector);
+        vm.expectRevert(JWKSRegistry.UnknownKey.selector);
         registry.getKey(KID_HASH);
 
         JWKSRegistry.Key[] memory keys = MockIssuer.keys();
@@ -77,6 +77,21 @@ contract JWKSRegistryTest is TestBase {
 
         registry.updateKeys(keys, fetchedAt, signKeySet(newAttestorKey, keys, fetchedAt));
         assertEq(registry.getKey(KID_HASH), MockIssuer.MODULUS);
+    }
+
+    /// @dev The issuer removed a key. Then the owner sets the same attestor again. An old snapshot
+    /// with the removed key must not come back.
+    function test_snapshotFromBeforeSetAttestorIsRejected() public {
+        JWKSRegistry.Key[] memory oldKeys = MockIssuer.keys();
+        uint64 oldTime = uint64(registry.fetchedAt());
+        bytes memory oldSignature = signKeySet(ATTESTOR_KEY, oldKeys, oldTime);
+        publish(_key("test-key-2", hex"d3"), oldTime + 60);
+
+        vm.warp(oldTime + 120);
+        registry.setAttestor(vm.addr(ATTESTOR_KEY));
+
+        vm.expectRevert(JWKSRegistry.OldKeySet.selector);
+        registry.updateKeys(oldKeys, oldTime, oldSignature);
     }
 
     function test_onlyOwnerSetsAttestor() public {
