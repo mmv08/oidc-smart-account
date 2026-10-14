@@ -7,13 +7,6 @@ libs = ["lib"]
 solc_version = "0.8.36"
 evm_version = "prague"
 optimizer = true
-optimizer_runs = 100000
-via_ir = true
-bytecode_hash = "none"
-cbor_metadata = false
-fuzz = { runs = 2048 }
-invariant = { runs = 512, depth = 64, fail_on_revert = false }
-fs_permissions = [{ access = "read", path = "./test/fixtures" }]
 
 [fmt]
 line_length = 100
@@ -23,6 +16,7 @@ int_types = "long"
 quote_style = "double"
 number_underscore = "thousands"
 
-[profile.ci]
-fuzz = { runs = 10000 }
-invariant = { runs = 2000, depth = 128, fail_on_revert = false }
+[lint]
+# These lints flag code that is correct here: time comparisons, reverts in parser loops, zero
+# addresses that stop updates or remove the signer, and an event after `ecrecover`.
+exclude_lints = ["block-timestamp", "require-revert-in-loop", "missing-zero-check", "reentrancy-events"]

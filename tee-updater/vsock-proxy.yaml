@@ -1,0 +1,4 @@
+# Allowlist for `vsock-proxy` on the parent instance. The proxy forwards only to these hosts.
+# Change the address if the issuer JWKS is on a different host.
+allowlist:
+  - { address: www.googleapis.com, port: 443 }
