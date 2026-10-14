@@ -92,7 +92,7 @@ struct Jwk {
     e: Option<String>,
 }
 
-/// Reads a JWKS and returns the keys that the verifier can use, in the order of their `kid`.
+/// Reads a JWKS and returns its RS256 signature keys, in the order of their `kid`.
 ///
 /// The verifier can use only RSA keys for RS256 signatures with the exponent 65537. As RFC 7517
 /// recommends, the function ignores all other keys. A duplicate `kid` causes an error.

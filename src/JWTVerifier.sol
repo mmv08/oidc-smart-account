@@ -21,7 +21,7 @@ contract JWTVerifier {
     /// @notice Hash of the `aud` claim (the OAuth client ID) that a JWT must have.
     bytes32 public immutable audienceHash;
 
-    /// @notice The JWT does not have three parts, or its algorithm is not RS256.
+    /// @notice The JWT has fewer than three parts, or its algorithm is not RS256.
     error InvalidJWT();
     /// @notice The RSA signature is not valid for the key that the JWT header selects.
     error InvalidSignature();

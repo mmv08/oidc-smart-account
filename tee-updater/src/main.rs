@@ -1,7 +1,7 @@
 mod nitro;
 
 use alloy_primitives::{Address, B256, Bytes};
-use anyhow::{Result, ensure};
+use anyhow::{Context, Result, ensure};
 use clap::{Args, Parser};
 use k256::ecdsa::SigningKey;
 use serde::Deserialize;
@@ -89,7 +89,8 @@ fn main() -> Result<()> {
             request,
             private_key,
         } => {
-            let key = SigningKey::from_slice(private_key.as_slice())?;
+            let key = SigningKey::from_slice(private_key.as_slice())
+                .context("private key is not a valid secp256k1 key")?;
             let url = Url::parse(&request.jwks_uri)?;
             let fetched_at = SystemTime::now().duration_since(UNIX_EPOCH)?.as_secs();
             let stream = TcpStream::connect((url.host.as_str(), url.port))?;

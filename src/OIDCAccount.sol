@@ -15,7 +15,7 @@ contract OIDCAccount {
     bytes32 public immutable subjectHash;
     /// @notice Address that can call `execute`. It is zero until the first `setSigner`.
     address public signer;
-    /// @notice Number of signer changes. Each JWT nonce contains this value.
+    /// @notice Number of signer changes. Each JWT nonce depends on this value.
     uint256 public nonce;
 
     /// @notice Emitted when a JWT sets the signer.

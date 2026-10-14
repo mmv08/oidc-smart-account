@@ -99,7 +99,7 @@ sequenceDiagram
 
 ### What each part examines
 
-The **TEE updater** gets the JWKS only over HTTPS, with a correct certificate. It keeps only the keys that the token verifier can use: RSA keys for RS256 signatures with the exponent 65537. It ignores other keys.
+The **TEE updater** in the enclave gets the JWKS only over HTTPS, with a correct certificate. It keeps only RSA keys for RS256 signatures with the exponent 65537, because the token verifier cannot use other keys.
 
 The **key registry** accepts a key set only if:
 
@@ -111,7 +111,7 @@ Thus nobody can put back an old key set. A change of the attestor key also remov
 The **token verifier** accepts an ID token only if:
 
 - the algorithm is RS256, and the header has no `crit` member;
-- the registry has the key with the key ID (`kid`) of the token, and the RSA signature is correct;
+- the registry has the key with the key ID (`kid`) of the token, the key has at least 2048 bits, and the RSA signature is correct;
 - the issuer (`iss`) and the app ID (`aud`) are the configured values;
 - the expiry time (`exp`) is after the current time, and the start time (`nbf`), if the token has one, is not after the current time.
 
@@ -124,6 +124,7 @@ The **account** accepts an ID token only if the user ID (`sub`) is the user of t
 - **Registry owner.** One address sets the attestor key. If an attacker gets control of this address, the attacker can set a false attestor key.
 - **Effect of a false key.** With a false key in the registry, an attacker can make an ID token for any user. Then the attacker can set the signing key of each account that uses the registry.
 - **Host and relayers.** They can stop or delay the key updates, but they cannot change the keys. If there is no update for one day, nobody can set a new signing key. The current signing keys continue to work.
+- **Gas.** The signing key sends its transactions itself. Thus it must have ETH for the gas.
 - **Privacy.** The ID token is public on the chain. Ask the issuer only for the `openid` scope. Then the token does not contain the email address or the name of the user.
 - **Account deployment.** Anyone can deploy an account for any user ID and with any token verifier. Before you send funds to an account, make sure that it has the correct token verifier and user ID.
 - **Token format.** The app ID (`aud`) must be one string, not a list. The claims that the verifier uses must be strings without escape characters. The verifier does not use `iat` and `azp`. OIDC Core makes the `azp` check optional when `aud` has one value.

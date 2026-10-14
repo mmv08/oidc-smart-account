@@ -11,6 +11,8 @@ import { Strings } from "@openzeppelin/contracts/utils/Strings.sol";
 /// member that the verifier uses must be a string without escapes, or an unsigned integer. A
 /// duplicate member that the verifier uses, or an escape in a member name, causes a revert.
 library JWTParser {
+    using Bytes for bytes;
+
     /// @notice The JSON is not valid, or a necessary member is missing.
     error InvalidJSON();
 
@@ -158,8 +160,8 @@ library JWTParser {
         returns (bytes memory value)
     {
         require(json[start] == '"', InvalidJSON());
-        value = Bytes.slice(json, start + 1, end - 1);
-        require(Bytes.indexOf(value, "\\") == type(uint256).max, InvalidJSON());
+        value = json.slice(start + 1, end - 1);
+        require(value.indexOf("\\") == type(uint256).max, InvalidJSON());
     }
 
     /// @dev Returns the value of an unsigned integer. Reverts for other values.

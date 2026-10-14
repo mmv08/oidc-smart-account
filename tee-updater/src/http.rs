@@ -111,15 +111,14 @@ fn exchange(mut stream: impl Read + Write, request: &str) -> Result<Vec<u8>> {
     stream.write_all(request.as_bytes())?;
     stream.flush()?;
     let mut response = Vec::new();
-    match stream
+    // Many servers (Google too) close TLS without `close_notify`. This is safe here: a cut
+    // response is not complete JSON, thus `parse_jwks` rejects it.
+    if let Err(error) = stream
         .take(MAX_RESPONSE_BYTES + 1)
         .read_to_end(&mut response)
+        && error.kind() != ErrorKind::UnexpectedEof
     {
-        Ok(_) => {}
-        // Many servers (Google too) close TLS without `close_notify`. This is safe here: a cut
-        // response is not complete JSON, thus `parse_jwks` rejects it.
-        Err(error) if error.kind() == ErrorKind::UnexpectedEof => {}
-        Err(error) => return Err(error.into()),
+        return Err(error.into());
     }
     ensure!(
         response.len() as u64 <= MAX_RESPONSE_BYTES,

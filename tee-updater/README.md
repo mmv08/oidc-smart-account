@@ -13,7 +13,7 @@ The TEE updater copies the JWKS of an OIDC issuer to the key registry contract. 
 - The signature binds the keys and the time to one JWKS URL, one chain, and one key registry.
 - The host can stop or delay the updates. This design cannot prevent that.
 
-The updater keeps only the keys that the token verifier can use: RSA keys for RS256 signatures with the exponent 65537. It ignores other keys, as RFC 7517 recommends. If no key is correct, the key set is empty, and it removes all keys from the registry.
+The updater keeps only RSA keys for RS256 signatures with the exponent 65537, because the token verifier cannot use other keys. It ignores other keys, as RFC 7517 recommends. If the JWKS has no such key, the key set is empty, and it removes all keys from the registry.
 
 ## Local mode
 
@@ -27,7 +27,7 @@ cargo run --manifest-path tee-updater/Cargo.toml -- sign \
   --private-key "$ATTESTOR_KEY" > key-set.json
 ```
 
-The private key is a usual secp256k1 key. Use this mode only for tests and demos. The output is the signed key set. Anyone can send it to the key registry:
+The private key is a usual secp256k1 key. Use this mode only for tests and demos. The output is the signed key set. Anyone can send it to the key registry. The file is not trusted data. Thus the script takes the registry address from `REGISTRY`, not from the file. The registry examines the signature of the keys and the time:
 
 ```bash
 REGISTRY="$REGISTRY" KEY_SET="$(cat key-set.json)" forge script script/UpdateKeys.s.sol \

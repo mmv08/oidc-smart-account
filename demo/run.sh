@@ -51,7 +51,7 @@ VERIFIER=$(deploy src/JWTVerifier.sol:JWTVerifier --constructor-args "$REGISTRY"
 echo "JWKSRegistry $REGISTRY"
 echo "JWTVerifier  $VERIFIER"
 
-step "2. The owner registers the attestor key (with an enclave: after the attestation check)"
+step "2. The owner sets the attestor key (with an enclave: after the attestation check)"
 send --private-key "$OWNER_KEY" "$REGISTRY" "setAttestor(address)" "$ATTESTOR"
 echo "attestor $ATTESTOR"
 
