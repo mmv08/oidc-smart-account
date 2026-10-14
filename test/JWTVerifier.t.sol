@@ -12,18 +12,8 @@ import { TestBase } from "./helpers/TestBase.sol";
 contract JWTVerifierTest is TestBase {
     using Bytes for bytes;
 
-    string internal constant NONCE =
-        "0x1111111111111111111111111111111111111111111111111111111111111111";
-
+    /// @dev The verifier ignores `iat` and unknown claims, also escaped strings and nested values.
     function test_returnsSubjectAndNonceHashes() public view {
-        string memory jwt = MockIssuer.token("alice", NONCE, block.timestamp + 600);
-
-        (bytes32 subjectHash, bytes32 nonceHash) = verifier.verify(jwt);
-        assertEq(subjectHash, keccak256("alice"));
-        assertEq(nonceHash, keccak256(bytes(NONCE)));
-    }
-
-    function test_acceptsCurrentNbfAndUnknownClaims() public view {
         string memory payload = string.concat(
             '{"iss":"https://issuer.example","aud":"demo-client","sub":"alice","nonce":"n","nbf":',
             Strings.toString(block.timestamp),
@@ -31,7 +21,9 @@ contract JWTVerifierTest is TestBase {
             '"name":"A \\"quoted\\" name","extra":{"nonce":"nested","list":[1,true,null]}}'
         );
 
-        (, bytes32 nonceHash) = verifier.verify(MockIssuer.sign(MockIssuer.HEADER, payload));
+        (bytes32 subjectHash, bytes32 nonceHash) =
+            verifier.verify(MockIssuer.sign(MockIssuer.HEADER, payload));
+        assertEq(subjectHash, keccak256("alice"));
         assertEq(nonceHash, keccak256("n"));
     }
 
@@ -48,7 +40,7 @@ contract JWTVerifierTest is TestBase {
 
     function test_rejectsExpiredOrNotYetValidToken() public {
         uint256 exp = block.timestamp + 600;
-        string memory jwt = MockIssuer.token("alice", NONCE, exp);
+        string memory jwt = MockIssuer.token("alice", "n", exp);
         vm.warp(exp);
         vm.expectRevert(JWTVerifier.InvalidClaims.selector);
         verifier.verify(jwt);
@@ -65,32 +57,10 @@ contract JWTVerifierTest is TestBase {
         );
     }
 
-    function test_rejectsAlgorithmOtherThanRS256() public {
-        string memory payload = MockIssuer.claims("alice", NONCE, block.timestamp + 600);
-
-        _expectRevert(
-            '{"alg":"HS256","kid":"test-key-1"}', payload, JWTVerifier.InvalidJWT.selector
-        );
-        _expectRevert('{"alg":"none","kid":"test-key-1"}', payload, JWTVerifier.InvalidJWT.selector);
-    }
-
-    function test_rejectsCriticalHeaderOrMissingKid() public {
-        string memory payload = MockIssuer.claims("alice", NONCE, block.timestamp + 600);
-
-        _expectRevert(
-            '{"alg":"RS256","kid":"test-key-1","crit":["exp"]}',
-            payload,
-            JWTParser.InvalidJSON.selector
-        );
-        _expectRevert('{"alg":"RS256"}', payload, JWTParser.InvalidJSON.selector);
-    }
-
     function test_rejectsChangedPayload() public {
-        string memory jwt = MockIssuer.token("alice", NONCE, block.timestamp + 600);
-        string memory otherJwt = MockIssuer.token("mallory", NONCE, block.timestamp + 600);
-        bytes memory token = bytes(jwt);
-        bytes memory other = bytes(otherJwt);
-        // Use the header and the payload of `otherJwt` with the signature of `jwt`.
+        bytes memory token = bytes(MockIssuer.token("alice", "n", block.timestamp + 600));
+        bytes memory other = bytes(MockIssuer.token("mallory", "n", block.timestamp + 600));
+        // Use the header and the payload of `other` with the signature of `token`.
         bytes memory forged = bytes.concat(
             other.slice(0, other.lastIndexOf(".")), token.slice(token.lastIndexOf("."))
         );
@@ -100,15 +70,31 @@ contract JWTVerifierTest is TestBase {
     }
 
     function test_rejectsKeyThatIsNotInTheRegistry() public {
-        string memory payload = MockIssuer.claims("alice", NONCE, block.timestamp + 600);
+        string memory payload = MockIssuer.claims("alice", "n", block.timestamp + 600);
 
         _expectRevert(
             '{"alg":"RS256","kid":"other-key"}', payload, JWKSRegistry.UnknownKey.selector
         );
     }
 
-    function test_rejectsAmbiguousClaims() public {
-        string[6] memory payloads = [
+    function test_rejectsInvalidHeader() public {
+        string memory payload = MockIssuer.claims("alice", "n", block.timestamp + 600);
+
+        _expectRevert(
+            '{"alg":"HS256","kid":"test-key-1"}', payload, JWTVerifier.InvalidJWT.selector
+        );
+        _expectRevert('{"alg":"none","kid":"test-key-1"}', payload, JWTVerifier.InvalidJWT.selector);
+        _expectRevert(
+            '{"alg":"RS256","kid":"test-key-1","crit":["exp"]}',
+            payload,
+            JWTParser.InvalidJSON.selector
+        );
+        _expectRevert('{"alg":"RS256"}', payload, JWTParser.InvalidJSON.selector);
+        _expectRevert('{"alg":"RS256","kid":"test-key-1",', payload, JWTParser.InvalidJSON.selector);
+    }
+
+    function test_rejectsInvalidOrAmbiguousClaims() public {
+        string[11] memory payloads = [
             // Duplicate nonce.
             '{"iss":"https://issuer.example","aud":"demo-client","sub":"a","nonce":"n","nonce":"m","exp":1700000600}',
             // Escaped member name ("nonce" is "nonce").
@@ -120,18 +106,16 @@ contract JWTVerifierTest is TestBase {
             // Missing exp.
             '{"iss":"https://issuer.example","aud":"demo-client","sub":"a","nonce":"n"}',
             // Expiry as a string.
-            '{"iss":"https://issuer.example","aud":"demo-client","sub":"a","nonce":"n","exp":"1700000600"}'
-        ];
-        for (uint256 i = 0; i < payloads.length; ++i) {
-            _expectRevert(payloads[i], JWTParser.InvalidJSON.selector);
-        }
-    }
-
-    function test_rejectsMalformedJson() public {
-        string[4] memory payloads = [
+            '{"iss":"https://issuer.example","aud":"demo-client","sub":"a","nonce":"n","exp":"1700000600"}',
+            // Comma before the closing brace.
             '{"iss":"https://issuer.example","aud":"demo-client","sub":"a","nonce":"n","exp":1700000600,}',
-            '{"iss":"https://issuer.example","aud":"demo-client","sub":"a","nonce":"n","exp":1700000600}x',
+            // Comma and no closing brace.
+            '{"iss":"https://issuer.example","aud":"demo-client","sub":"a","nonce":"n","exp":1700000600,',
+            // No closing brace.
             '{"iss":"https://issuer.example","aud":"demo-client","sub":"a","nonce":"n","exp":1700000600',
+            // Data after the object.
+            '{"iss":"https://issuer.example","aud":"demo-client","sub":"a","nonce":"n","exp":1700000600}x',
+            // No colon.
             '{"iss" "https://issuer.example","aud":"demo-client","sub":"a","nonce":"n","exp":1700000600}'
         ];
         for (uint256 i = 0; i < payloads.length; ++i) {

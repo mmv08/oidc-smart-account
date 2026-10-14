@@ -49,26 +49,28 @@ contract JWTVerifier {
     {
         bytes memory token = bytes(jwt);
         uint256 dot1 = token.indexOf(".");
-        if (dot1 == type(uint256).max) revert InvalidJWT();
+        require(dot1 != type(uint256).max, InvalidJWT());
         uint256 dot2 = token.indexOf(".", dot1 + 1);
-        if (dot2 == type(uint256).max) revert InvalidJWT();
+        require(dot2 != type(uint256).max, InvalidJWT());
 
         (bytes memory alg, bytes memory kid) = JWTParser.parseHeader(_decode(token, 0, dot1));
-        if (keccak256(alg) != keccak256("RS256")) revert InvalidJWT();
+        require(alg.equal("RS256"), InvalidJWT());
 
         // The signature covers the Base64URL text. Thus the decoded header and payload are exactly
         // what the issuer signed.
         bytes memory modulus = registry.getKey(keccak256(kid));
         bytes memory signature = _decode(token, dot2 + 1, token.length);
-        if (!RSA.pkcs1Sha256(token.slice(0, dot2), signature, hex"010001", modulus)) {
-            revert InvalidSignature();
-        }
+        require(
+            RSA.pkcs1Sha256(token.slice(0, dot2), signature, hex"010001", modulus),
+            InvalidSignature()
+        );
 
         JWTParser.Claims memory claims = JWTParser.parseClaims(_decode(token, dot1 + 1, dot2));
-        if (
-            keccak256(claims.iss) != issuerHash || keccak256(claims.aud) != audienceHash
-                || claims.exp <= block.timestamp || claims.nbf > block.timestamp
-        ) revert InvalidClaims();
+        require(
+            keccak256(claims.iss) == issuerHash && keccak256(claims.aud) == audienceHash
+                && claims.exp > block.timestamp && claims.nbf <= block.timestamp,
+            InvalidClaims()
+        );
 
         return (keccak256(claims.sub), keccak256(claims.nonce));
     }

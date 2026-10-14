@@ -44,9 +44,9 @@ contract OIDCAccount {
     /// @param newSigner Address that the JWT approves as the new signer.
     function setSigner(string calldata jwt, address newSigner) external {
         (bytes32 sub, bytes32 nonceHash) = verifier.verify(jwt);
-        if (sub != subjectHash || nonceHash != keccak256(bytes(jwtNonce(newSigner)))) {
-            revert InvalidJWT();
-        }
+        require(
+            sub == subjectHash && nonceHash == keccak256(bytes(jwtNonce(newSigner))), InvalidJWT()
+        );
         signer = newSigner;
         ++nonce;
         emit SignerSet(newSigner);
@@ -54,14 +54,9 @@ contract OIDCAccount {
 
     /// @notice Calls `target` from the account. Only the signer can do this.
     /// @dev If the call reverts, this function reverts with the same data.
-    /// @return Data that the call returned.
-    function execute(address target, uint256 value, bytes calldata data)
-        external
-        returns (bytes memory)
-    {
-        if (msg.sender != signer) revert NotSigner();
+    function execute(address target, uint256 value, bytes calldata data) external {
+        require(msg.sender == signer, NotSigner());
         if (!LowLevelCall.callNoReturn(target, value, data)) LowLevelCall.bubbleRevert();
-        return LowLevelCall.returnData();
     }
 
     /// @notice Returns the `nonce` claim that a JWT must have to set `newSigner`.

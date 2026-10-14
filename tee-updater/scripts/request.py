@@ -1,11 +1,11 @@
 #!/usr/bin/env python3
 """Sends one JSON request to the enclave over vsock and prints the response.
 
-Run this script on the parent instance. Examples:
+Run this script on the host (the parent EC2 instance). Examples:
 
   request.py --cid 16 '{"operation":"attest","challenge":"0x<32 random bytes>"}'
   request.py --cid 16 '{"operation":"sign","jwksUri":"https://www.googleapis.com/oauth2/v3/certs",
-                        "chainId":1,"registry":"0x<JWKSRegistry address>"}'
+                        "chainId":1,"registry":"0x<key registry address>"}'
 """
 
 import argparse

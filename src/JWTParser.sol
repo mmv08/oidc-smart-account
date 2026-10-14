@@ -2,13 +2,14 @@
 pragma solidity ^0.8.37;
 
 import { Bytes } from "@openzeppelin/contracts/utils/Bytes.sol";
+import { Strings } from "@openzeppelin/contracts/utils/Strings.sol";
 
 /// @title JWT JSON Parser
-/// @notice Reads the JWT header members and the claims that `JWTVerifier` uses.
-/// @dev The parser reads only the top-level members of one JSON object. It finds the end of other
-/// values, but it does not validate their content: the issuer signature covers the JSON. A member
-/// that the verifier uses must be a string without escapes, or an unsigned integer. A duplicate
-/// member that the verifier uses, or an escape in a member name, causes a revert.
+/// @notice Reads the members of a JWT header and payload that `JWTVerifier` uses.
+/// @dev The parser reads only the top-level members of one JSON object. It finds the end of the
+/// other values, but it does not validate their content: the issuer signature covers the JSON. A
+/// member that the verifier uses must be a string without escapes, or an unsigned integer. A
+/// duplicate member that the verifier uses, or an escape in a member name, causes a revert.
 library JWTParser {
     /// @notice The JSON is not valid, or a necessary member is missing.
     error InvalidJSON();
@@ -37,7 +38,7 @@ library JWTParser {
         returns (bytes memory alg, bytes memory kid)
     {
         uint256 seen = 0;
-        for (uint256 i = _open(json); i < json.length;) {
+        for (uint256 i = _open(json); i != 0;) {
             bytes32 name;
             uint256 start;
             uint256 end;
@@ -52,14 +53,14 @@ library JWTParser {
                 revert InvalidJSON();
             }
         }
-        if (seen != 3) revert InvalidJSON();
+        require(seen == 3, InvalidJSON());
     }
 
     /// @notice Reads the claims of a JWT payload.
     /// @dev `iss`, `aud`, `sub`, `nonce`, and `exp` are necessary. `nbf` is optional.
     function parseClaims(bytes memory json) internal pure returns (Claims memory claims) {
         uint256 seen = 0;
-        for (uint256 i = _open(json); i < json.length;) {
+        for (uint256 i = _open(json); i != 0;) {
             bytes32 name;
             uint256 start;
             uint256 end;
@@ -84,19 +85,19 @@ library JWTParser {
                 claims.nbf = _uint(json, start, end);
             }
         }
-        if (seen & 31 != 31) revert InvalidJSON();
+        require(seen & 31 == 31, InvalidJSON());
     }
 
     /// @dev Returns the index of the first member of the top-level object.
     function _open(bytes memory json) private pure returns (uint256 i) {
         i = _skipSpace(json, 0);
-        if (_at(json, i) != "{") revert InvalidJSON();
+        require(_at(json, i) == "{", InvalidJSON());
         i = _skipSpace(json, i + 1);
     }
 
     /// @dev Reads the member `"name": value` that starts at `i`. Returns the name hash, the start and
-    /// the end of the value, and the start of the next member. After the last member, `next` is
-    /// `json.length`.
+    /// the end of the value, and the start of the next member. After the last member, `next` is zero.
+    /// After a comma, the caller always reads one more member. Thus a comma at the end reverts.
     function _member(bytes memory json, uint256 i)
         private
         pure
@@ -105,13 +106,13 @@ library JWTParser {
         end = _skipString(json, i);
         name = keccak256(_string(json, i, end));
         i = _skipSpace(json, end);
-        if (_at(json, i) != ":") revert InvalidJSON();
+        require(_at(json, i) == ":", InvalidJSON());
         start = _skipSpace(json, i + 1);
         end = _skipValue(json, start);
         next = _skipSpace(json, end);
         if (_at(json, next) == ",") return (name, start, end, _skipSpace(json, next + 1));
-        if (json[next] != "}" || _skipSpace(json, next + 1) != json.length) revert InvalidJSON();
-        next = json.length;
+        require(json[next] == "}" && _skipSpace(json, next + 1) == json.length, InvalidJSON());
+        next = 0;
     }
 
     /// @dev Returns the end of the value that starts at `i`. For an object or an array, it finds the
@@ -137,13 +138,13 @@ library JWTParser {
         while (i < json.length && !_isDelimiter(json[i])) {
             ++i;
         }
-        if (i == start) revert InvalidJSON();
+        require(i > start, InvalidJSON());
         return i;
     }
 
     /// @dev Returns the index after the closing quote of the string that starts at `i`.
     function _skipString(bytes memory json, uint256 i) private pure returns (uint256) {
-        if (_at(json, i) != '"') revert InvalidJSON();
+        require(_at(json, i) == '"', InvalidJSON());
         for (++i; _at(json, i) != '"'; ++i) {
             if (json[i] == "\\") ++i;
         }
@@ -156,9 +157,9 @@ library JWTParser {
         pure
         returns (bytes memory value)
     {
-        if (json[start] != '"') revert InvalidJSON();
+        require(json[start] == '"', InvalidJSON());
         value = Bytes.slice(json, start + 1, end - 1);
-        if (Bytes.indexOf(value, "\\") != type(uint256).max) revert InvalidJSON();
+        require(Bytes.indexOf(value, "\\") == type(uint256).max, InvalidJSON());
     }
 
     /// @dev Returns the value of an unsigned integer. Reverts for other values.
@@ -167,16 +168,14 @@ library JWTParser {
         pure
         returns (uint256 value)
     {
-        for (uint256 i = start; i < end; ++i) {
-            uint8 digit = uint8(json[i]);
-            if (digit < 0x30 || digit > 0x39) revert InvalidJSON();
-            value = value * 10 + (digit - 0x30);
-        }
+        bool success;
+        (success, value) = Strings.tryParseUint(string(json), start, end);
+        require(success, InvalidJSON());
     }
 
     /// @dev Reverts if the member flag is already set. This stops duplicate members.
     function _mark(uint256 seen, uint256 flag) private pure returns (uint256) {
-        if (seen & flag != 0) revert InvalidJSON();
+        require(seen & flag == 0, InvalidJSON());
         return seen | flag;
     }
 
@@ -188,7 +187,7 @@ library JWTParser {
     }
 
     function _at(bytes memory json, uint256 i) private pure returns (bytes1) {
-        if (i >= json.length) revert InvalidJSON();
+        require(i < json.length, InvalidJSON());
         return json[i];
     }
 

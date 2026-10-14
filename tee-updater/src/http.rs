@@ -29,17 +29,15 @@ impl Url {
             url.bytes().all(|byte| byte.is_ascii_graphic()),
             "URL has a space or a control character"
         );
-        let (https, rest) = if let Some(rest) = url.strip_prefix("https://") {
-            (true, rest)
-        } else if let Some(rest) = url.strip_prefix("http://") {
-            (false, rest)
-        } else {
-            bail!("URL must start with https:// or http://");
+        let (https, default_port, rest) = match url.split_once("://") {
+            Some(("https", rest)) => (true, 443, rest),
+            Some(("http", rest)) => (false, 80, rest),
+            _ => bail!("URL must start with https:// or http://"),
         };
         let (authority, path) = rest.split_at(rest.find('/').unwrap_or(rest.len()));
         let (host, port) = match authority.split_once(':') {
             Some((host, port)) => (host, port.parse().context("URL port is not valid")?),
-            None => (authority, if https { 443 } else { 80 }),
+            None => (authority, default_port),
         };
         ensure!(!host.is_empty(), "URL has no host");
         Ok(Self {
@@ -47,11 +45,7 @@ impl Url {
             authority: authority.to_owned(),
             host: host.to_owned(),
             port,
-            path: if path.is_empty() {
-                "/".to_owned()
-            } else {
-                path.to_owned()
-            },
+            path: if path.is_empty() { "/" } else { path }.to_owned(),
         })
     }
 }

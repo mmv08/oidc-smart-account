@@ -9,7 +9,7 @@ import { TestBase } from "./helpers/TestBase.sol";
 contract JWKSRegistryTest is TestBase {
     bytes32 internal constant KID_HASH = keccak256(bytes(MockIssuer.KID));
 
-    function test_anyoneCanRelayAKeySetThatReplacesAllKeys() public {
+    function test_anyoneCanSendAKeySetThatReplacesAllKeys() public {
         JWKSRegistry.Key[] memory keys = _key("test-key-2", hex"d3");
         uint64 fetchedAt = uint64(block.timestamp + 1);
         bytes memory signature = signKeySet(ATTESTOR_KEY, keys, fetchedAt);
@@ -32,7 +32,7 @@ contract JWKSRegistryTest is TestBase {
         registry.updateKeys(keys, fetchedAt, signature);
     }
 
-    /// @dev A second snapshot from the same second must not replace the current key set.
+    /// @dev A second key set from the same second must not replace the current key set.
     function test_rejectsKeySetThatIsNotNewer() public {
         JWKSRegistry.Key[] memory keys = _key("test-key-2", hex"d3");
         uint64 fetchedAt = uint64(registry.fetchedAt());
@@ -71,7 +71,7 @@ contract JWKSRegistryTest is TestBase {
 
     /// @dev The owner sets the same attestor again, in the same second as the current key set. The
     /// removed key set must not come back.
-    function test_setAttestorRejectsEarlierSnapshots() public {
+    function test_setAttestorRejectsEarlierKeySets() public {
         JWKSRegistry.Key[] memory keys = MockIssuer.keys();
         uint64 fetchedAt = uint64(registry.fetchedAt());
         bytes memory signature = signKeySet(ATTESTOR_KEY, keys, fetchedAt);
