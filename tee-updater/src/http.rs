@@ -1,7 +1,7 @@
 //! Minimal HTTP/1.0 client. It sends one GET request over a stream that the caller opens: a TCP
 //! connection on a host, or a vsock connection to the parent proxy in the enclave.
 
-use anyhow::{bail, ensure, Context, Result};
+use anyhow::{Context, Result, bail, ensure};
 use rustls::pki_types::ServerName;
 use rustls::{ClientConfig, ClientConnection, RootCertStore, StreamOwned};
 use std::io::{ErrorKind, Read, Write};

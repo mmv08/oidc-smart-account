@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: MIT
-pragma solidity ^0.8.36;
+pragma solidity ^0.8.37;
 
 import { LowLevelCall } from "@openzeppelin/contracts/utils/LowLevelCall.sol";
 import { Strings } from "@openzeppelin/contracts/utils/Strings.sol";

@@ -3,11 +3,11 @@
 //! Run this tool outside the enclave, before you set the attestor in the registry.
 
 use anyhow::{Context, Result};
-use base64::{engine::general_purpose::STANDARD, Engine};
+use base64::{Engine, engine::general_purpose::STANDARD};
 use clap::Parser;
 use nitro_attest::UnparsedAttestationDoc;
 use std::time::{SystemTime, UNIX_EPOCH};
-use tee_updater::{check_attestation, Attestation};
+use tee_updater::{Attestation, check_attestation};
 use time::OffsetDateTime;
 
 #[derive(Parser)]
@@ -15,7 +15,7 @@ struct Args {
     /// JSON file with the response of the `attest` request.
     #[arg(long)]
     response: String,
-    /// Challenge that you sent in the `attest` request, as hex.
+    /// The 32-byte random challenge that you sent in the `attest` request, as hex.
     #[arg(long)]
     challenge: String,
     /// Expected PCR0, PCR1, and PCR2 of the enclave image (`nitro-cli describe-eif`), as hex.
@@ -57,7 +57,10 @@ fn main() -> Result<()> {
         nonce: document.nonce.context("document has no nonce")?.into_vec(),
     };
     let expected_pcrs = [pcr(&args.pcr0)?, pcr(&args.pcr1)?, pcr(&args.pcr2)?];
-    let challenge = hex::decode(args.challenge.trim_start_matches("0x"))?;
+    let challenge: [u8; 32] = hex::decode(args.challenge.trim_start_matches("0x"))?
+        .try_into()
+        .ok()
+        .context("challenge is not 32 bytes")?;
 
     println!(
         "{}",

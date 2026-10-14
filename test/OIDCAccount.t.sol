@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: MIT
-pragma solidity ^0.8.36;
+pragma solidity ^0.8.37;
 
 import { OIDCAccount } from "../src/OIDCAccount.sol";
 import { MockIssuer } from "./helpers/MockIssuer.sol";

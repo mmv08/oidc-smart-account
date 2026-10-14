@@ -63,11 +63,13 @@ The verifier makes sure that:
 - **Issuer.** The account trusts the issuer to authenticate the user. A person who can log in as the user can set a new signer immediately. There is no delay and no cancel.
 - **TEE updater.** The attestor key signs only key sets that the enclave code got over TLS. The Nitro attestation shows which code has the key. A defect in this code, in AWS Nitro, or in the TLS root certificates can put a false key on-chain.
 - **Registry owner.** One address sets the attestor. If an attacker gets this key, the attacker can set a false attestor.
+- **Impact of a false key.** With a false key in the registry, an attacker can sign a JWT for any `sub`. Then the attacker can set the signer of every account that uses the registry, immediately. For more than a demo, keep the owner key in a multisig or a hardware wallet.
 - **Host and relayers.** They can stop or delay updates, but they cannot change the keys. If there is no update for one day, `setSigner` stops. The signer can continue to use `execute`.
 - **Privacy.** The JWT is public calldata. Ask the issuer only for the `openid` scope, so that the JWT does not contain the email or the name.
+- **Account deployment.** Anyone can deploy an account for any `sub` and with any verifier. Before you send funds to an account, make sure that `verifier()` and `subjectHash()` have the correct values.
 - **Parser.** `aud` must be one string, not an array. The claims that the verifier uses must be strings without escapes. The verifier ignores `iat`.
 - **Out of scope:** more than one signer, recovery delays, multisig owners, passkeys, ERC-4337, and upgrades.
-- **Not tested on AWS:** the enclave mode of the TEE updater has not run on a Nitro instance. See [`tee-updater/README.md`](tee-updater/README.md).
+- **Not tested on AWS:** the enclave image builds, but the enclave mode of the TEE updater has not run on a Nitro instance. See [`tee-updater/README.md`](tee-updater/README.md).
 
 ## Run the demo
 
@@ -83,6 +85,8 @@ git submodule update --init
 The script deploys the contracts, sets the attestor, publishes the mock JWKS, and deploys the account of the user `alice`. Then it sets a signer with a JWT, sends 0.5 ETH from the account, and shows that the same JWT does not work a second time. `setSigner` uses approximately 420,000 gas.
 
 ## Build and test
+
+The project uses Foundry 1.8.5, solc 0.8.37 (EVM version Osaka), OpenZeppelin Contracts 5.7.0, forge-std 1.17.0, and Rust 1.99.0 ([`rust-toolchain.toml`](rust-toolchain.toml)).
 
 ```bash
 forge test

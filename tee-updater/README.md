@@ -2,7 +2,7 @@
 
 The TEE updater gets the JWKS of an OIDC issuer and signs it for the `JWKSRegistry` contract. It runs in an AWS Nitro Enclave. For tests and demos, it can also run on a usual host (local mode).
 
-**Status:** the local mode is tested. The enclave mode has not run on a Nitro instance, and the Docker image was not built in this repository.
+**Status:** the local mode is tested, and the Docker image builds (tested with Podman on arm64). The enclave mode has not run on a Nitro instance.
 
 ## Security boundary
 
@@ -16,18 +16,20 @@ The updater accepts a JWKS only if each key is an RS256 signature key (`kty` RSA
 
 ## Local mode
 
+Run these commands in the repository root.
+
 ```bash
-cargo run -- sign \
+cargo run --manifest-path tee-updater/Cargo.toml -- sign \
   --jwks-uri https://www.googleapis.com/oauth2/v3/certs \
   --chain-id 31337 \
-  --registry 0xREGISTRY \
-  --private-key 0xATTESTOR_KEY > snapshot.json
+  --registry "$REGISTRY" \
+  --private-key "$ATTESTOR_KEY" > snapshot.json
 ```
 
-The private key is a usual secp256k1 key. Use this mode only for tests and demos. The output is the signed key set. Anyone can send it to the registry:
+The private key is a usual secp256k1 key. Use this mode only for tests and demos. The output is the signed key set. Anyone can send it to the registry. The script takes the registry address from `REGISTRY`, not from the snapshot, because the snapshot is not trusted data:
 
 ```bash
-SNAPSHOT="$(cat snapshot.json)" forge script script/UpdateKeys.s.sol \
+REGISTRY="$REGISTRY" SNAPSHOT="$(cat snapshot.json)" forge script script/UpdateKeys.s.sol \
   --rpc-url "$RPC_URL" --private-key "$PRIVATE_KEY" --broadcast
 ```
 
@@ -79,7 +81,7 @@ You need an EC2 instance with Nitro Enclaves, `nitro-cli`, `vsock-proxy`, and Do
    ```bash
    python3 tee-updater/scripts/request.py --cid "$CID" \
      "{\"operation\":\"sign\",\"jwksUri\":\"https://www.googleapis.com/oauth2/v3/certs\",\"chainId\":1,\"registry\":\"$REGISTRY\"}" > snapshot.json
-   SNAPSHOT="$(cat snapshot.json)" forge script script/UpdateKeys.s.sol \
+   REGISTRY="$REGISTRY" SNAPSHOT="$(cat snapshot.json)" forge script script/UpdateKeys.s.sol \
      --rpc-url "$RPC_URL" --private-key "$PRIVATE_KEY" --broadcast
    ```
 

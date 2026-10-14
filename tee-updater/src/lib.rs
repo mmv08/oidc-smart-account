@@ -2,8 +2,8 @@
 
 pub mod http;
 
-use anyhow::{ensure, Context, Result};
-use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine};
+use anyhow::{Context, Result, ensure};
+use base64::{Engine, engine::general_purpose::URL_SAFE_NO_PAD};
 use k256::ecdsa::{SigningKey, VerifyingKey};
 use serde::{Deserialize, Serialize, Serializer};
 use sha3::{Digest, Keccak256};
@@ -127,7 +127,7 @@ pub fn sign_snapshot(
 ) -> Result<Snapshot> {
     let registry = parse_address(registry)?;
     let digest = key_set_digest(chain_id, &registry, jwks_uri, &keys, fetched_at);
-    let (signature, recovery_id) = key.sign_prehash_recoverable(&digest)?;
+    let (signature, recovery_id) = key.sign_prehash_recoverable(&digest);
     let mut signature = signature.to_bytes().to_vec();
     signature.push(27 + recovery_id.to_byte());
     Ok(Snapshot {
@@ -143,7 +143,7 @@ pub fn sign_snapshot(
 
 /// Returns the Ethereum address of a secp256k1 public key.
 pub fn address(key: &VerifyingKey) -> String {
-    let point = key.to_encoded_point(false);
+    let point = key.to_sec1_point(false);
     format!("0x{}", hex::encode(&keccak(&point.as_bytes()[1..])[12..]))
 }
 
@@ -161,11 +161,12 @@ pub struct Attestation {
 /// Returns the attestor address if the attestation is for the expected enclave image, the
 /// expected challenge, and a time near `now`.
 ///
-/// Before you call this function, verify the AWS signature of the document.
+/// Before you call this function, verify the AWS signature of the document. The challenge must be
+/// new and random, so that an old attestation document cannot be used again.
 pub fn check_attestation(
     attestation: &Attestation,
     expected_pcrs: &[[u8; 48]; 3],
-    challenge: &[u8],
+    challenge: &[u8; 32],
     now: u64,
     max_age: u64,
 ) -> Result<String> {
@@ -181,7 +182,7 @@ pub fn check_attestation(
         );
     }
     ensure!(
-        attestation.nonce == challenge,
+        attestation.nonce == challenge.as_slice(),
         "attestation nonce is not the challenge"
     );
     ensure!(

@@ -1,6 +1,6 @@
 //! Requests to the Nitro Secure Module (NSM) of the enclave.
 
-use anyhow::{anyhow, bail, Result};
+use anyhow::{Result, anyhow, bail};
 use aws_nitro_enclaves_nsm_api::api::{AttestationDoc, Request, Response};
 use aws_nitro_enclaves_nsm_api::driver::{nsm_exit, nsm_init, nsm_process_request};
 use serde_bytes::ByteBuf;

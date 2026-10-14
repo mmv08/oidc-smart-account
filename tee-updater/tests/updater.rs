@@ -1,8 +1,8 @@
-use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine};
+use base64::{Engine, engine::general_purpose::URL_SAFE_NO_PAD};
 use k256::ecdsa::SigningKey;
 use std::collections::BTreeMap;
-use tee_updater::http::{body, Url};
-use tee_updater::{check_attestation, key_set_digest, parse_jwks, sign_snapshot, Attestation, Key};
+use tee_updater::http::{Url, body};
+use tee_updater::{Attestation, Key, check_attestation, key_set_digest, parse_jwks, sign_snapshot};
 
 fn jwk(kid: &str, modulus: &[u8], e: &str) -> String {
     format!(
@@ -105,7 +105,7 @@ fn attestation() -> Attestation {
     let public_key = SigningKey::from_slice(&private_key)
         .unwrap()
         .verifying_key()
-        .to_encoded_point(false);
+        .to_sec1_point(false);
     Attestation {
         timestamp: 1_000,
         pcrs: BTreeMap::from([

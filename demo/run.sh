@@ -49,7 +49,7 @@ echo "attestor $ATTESTOR"
 step "3. The TEE updater gets the issuer JWKS and signs it. A relayer sends the snapshot."
 SNAPSHOT=$(tee-updater/target/debug/tee-updater sign --jwks-uri "$JWKS_URI" --chain-id 31337 \
   --registry "$REGISTRY" --private-key "$ATTESTOR_KEY")
-SNAPSHOT="$SNAPSHOT" forge script script/UpdateKeys.s.sol --rpc-url "$RPC_URL" \
+REGISTRY="$REGISTRY" SNAPSHOT="$SNAPSHOT" forge script script/UpdateKeys.s.sol --rpc-url "$RPC_URL" \
   --private-key "$OWNER_KEY" --broadcast --silent
 KID_HASH=$(cast keccak mock-key-1)
 echo "key mock-key-1: $(cast call --rpc-url "$RPC_URL" "$REGISTRY" "getKey(bytes32)(bytes)" "$KID_HASH" | cut -c1-20)..."

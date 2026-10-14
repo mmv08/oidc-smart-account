@@ -1,18 +1,17 @@
 mod nitro;
 
-use anyhow::{ensure, Context, Result};
-use base64::{engine::general_purpose::STANDARD, Engine};
+use anyhow::{Context, Result, ensure};
+use base64::{Engine, engine::general_purpose::STANDARD};
 use clap::Parser;
 use k256::ecdsa::SigningKey;
-use rand_core::OsRng;
 use serde::Deserialize;
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 use std::io::{Read, Write};
 use std::net::TcpStream;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use tee_updater::http::{self, Url};
 use tee_updater::{address, parse_jwks, sign_snapshot};
-use vsock::{VsockAddr, VsockListener, VsockStream, VMADDR_CID_ANY};
+use vsock::{VMADDR_CID_ANY, VsockAddr, VsockListener, VsockStream};
 
 /// The parent instance always has this vsock context ID.
 const PARENT_CID: u32 = 3;
@@ -91,7 +90,9 @@ fn main() -> Result<()> {
 /// Answers one request at a time. The attestor key stays in the enclave memory. A restart makes a
 /// new key, and the owner must set it in the registry again.
 fn serve(port: u32, proxy_port: u32) -> Result<()> {
-    let key = SigningKey::random(&mut OsRng);
+    let mut secret = [0; 32];
+    getrandom::fill(&mut secret)?;
+    let key = SigningKey::from_slice(&secret)?;
     println!("attestor {}", address(key.verifying_key()));
     let listener = VsockListener::bind_with_cid_port(VMADDR_CID_ANY, port)?;
     for stream in listener.incoming() {
@@ -109,7 +110,7 @@ fn handle(key: &SigningKey, proxy_port: u32, stream: &mut VsockStream) -> Result
     stream.take(MAX_REQUEST_BYTES).read_to_end(&mut request)?;
     match serde_json::from_slice(&request)? {
         Request::Attest { challenge } => {
-            let public_key = key.verifying_key().to_encoded_point(false);
+            let public_key = key.verifying_key().to_sec1_point(false);
             let challenge = hex::decode(challenge.trim_start_matches("0x"))?;
             let document =
                 nitro::attestation_document(Some(public_key.as_bytes()), Some(&challenge))?;
