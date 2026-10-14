@@ -50,7 +50,7 @@ struct Jwk {
 /// Reads a JWKS and returns its keys in the order of their `kid`.
 ///
 /// Each key must be an RS256 signature key with the exponent 65537 and a 2048-bit modulus. If one
-/// key is not correct, the function rejects the full JWKS.
+/// key is not correct, the function rejects the full JWKS. An empty JWKS gives an empty key set.
 pub fn parse_jwks(body: &[u8]) -> Result<Vec<Key>> {
     let jwks: Jwks = serde_json::from_slice(body).context("JWKS is not valid")?;
     let mut keys = Vec::with_capacity(jwks.keys.len());
@@ -71,7 +71,6 @@ pub fn parse_jwks(body: &[u8]) -> Result<Vec<Key>> {
         );
         keys.push(Key { kid, modulus });
     }
-    ensure!(!keys.is_empty(), "JWKS has no keys");
     keys.sort_by(|a, b| a.kid.cmp(&b.kid));
     ensure!(
         keys.windows(2).all(|pair| pair[0].kid != pair[1].kid),
@@ -149,8 +148,6 @@ pub fn address(key: &VerifyingKey) -> String {
 
 /// Values of a Nitro attestation document that `check_attestation` examines.
 pub struct Attestation {
-    /// Time of the document, in Unix seconds.
-    pub timestamp: u64,
     /// Platform configuration registers: the measurements of the enclave image.
     pub pcrs: BTreeMap<u16, Vec<u8>>,
     /// Public key of the attestor, as SEC1 bytes.
@@ -158,17 +155,15 @@ pub struct Attestation {
     pub nonce: Vec<u8>,
 }
 
-/// Returns the attestor address if the attestation is for the expected enclave image, the
-/// expected challenge, and a time near `now`.
+/// Returns the attestor address if the attestation is for the expected enclave image and the
+/// expected challenge.
 ///
 /// Before you call this function, verify the AWS signature of the document. The challenge must be
-/// new and random, so that an old attestation document cannot be used again.
+/// new and random. Thus the document is new, and an old document cannot be used again.
 pub fn check_attestation(
     attestation: &Attestation,
     expected_pcrs: &[[u8; 48]; 3],
     challenge: &[u8; 32],
-    now: u64,
-    max_age: u64,
 ) -> Result<String> {
     for (index, expected) in expected_pcrs.iter().enumerate() {
         // A debug-mode enclave has zero PCRs. Its memory is not protected.
@@ -184,10 +179,6 @@ pub fn check_attestation(
     ensure!(
         attestation.nonce == challenge.as_slice(),
         "attestation nonce is not the challenge"
-    );
-    ensure!(
-        attestation.timestamp.abs_diff(now) <= max_age,
-        "attestation time is not within {max_age} seconds of now"
     );
     let key = VerifyingKey::from_sec1_bytes(&attestation.public_key)
         .context("attestation public key is not a secp256k1 key")?;

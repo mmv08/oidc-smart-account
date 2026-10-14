@@ -1,7 +1,6 @@
 // SPDX-License-Identifier: MIT
 pragma solidity ^0.8.37;
 
-import { Ownable } from "@openzeppelin/contracts/access/Ownable.sol";
 import { ECDSA } from "@openzeppelin/contracts/utils/cryptography/ECDSA.sol";
 import { JWKSRegistry } from "../src/JWKSRegistry.sol";
 import { MockIssuer } from "./helpers/MockIssuer.sol";
@@ -10,19 +9,18 @@ import { TestBase } from "./helpers/TestBase.sol";
 contract JWKSRegistryTest is TestBase {
     bytes32 internal constant KID_HASH = keccak256(bytes(MockIssuer.KID));
 
-    function test_signedKeySetIsPublished() public view {
-        assertEq(registry.getKey(KID_HASH), MockIssuer.MODULUS);
-        assertEq(registry.fetchedAt(), block.timestamp);
-    }
-
-    function test_anyoneCanRelayASignedKeySet() public {
-        JWKSRegistry.Key[] memory keys = MockIssuer.keys();
+    function test_anyoneCanRelayAKeySetThatReplacesAllKeys() public {
+        JWKSRegistry.Key[] memory keys = _key("test-key-2", hex"d3");
         uint64 fetchedAt = uint64(block.timestamp + 1);
         bytes memory signature = signKeySet(ATTESTOR_KEY, keys, fetchedAt);
 
         vm.prank(makeAddr("relayer"));
         registry.updateKeys(keys, fetchedAt, signature);
+
         assertEq(registry.fetchedAt(), fetchedAt);
+        assertEq(registry.getKey(keccak256("test-key-2")), keys[0].modulus);
+        vm.expectRevert(JWKSRegistry.UnknownKey.selector);
+        registry.getKey(KID_HASH);
     }
 
     function test_rejectsKeySetNotSignedByAttestor() public {
@@ -34,22 +32,14 @@ contract JWKSRegistryTest is TestBase {
         registry.updateKeys(keys, fetchedAt, signature);
     }
 
-    function test_rejectsKeySetOlderThanCurrentKeySet() public {
-        JWKSRegistry.Key[] memory keys = MockIssuer.keys();
-        uint64 fetchedAt = uint64(registry.fetchedAt()) - 1;
+    /// @dev A second snapshot from the same second must not replace the current key set.
+    function test_rejectsKeySetThatIsNotNewer() public {
+        JWKSRegistry.Key[] memory keys = _key("test-key-2", hex"d3");
+        uint64 fetchedAt = uint64(registry.fetchedAt());
         bytes memory signature = signKeySet(ATTESTOR_KEY, keys, fetchedAt);
 
         vm.expectRevert(JWKSRegistry.OldKeySet.selector);
         registry.updateKeys(keys, fetchedAt, signature);
-    }
-
-    function test_newKeySetReplacesAllKeys() public {
-        JWKSRegistry.Key[] memory next = _key("test-key-2", hex"d3");
-        publish(next, uint64(block.timestamp + 1));
-
-        assertEq(registry.getKey(keccak256("test-key-2")), next[0].modulus);
-        vm.expectRevert(JWKSRegistry.UnknownKey.selector);
-        registry.getKey(KID_HASH);
     }
 
     function test_keySetBecomesStaleAfterMaxAge() public {
@@ -79,26 +69,21 @@ contract JWKSRegistryTest is TestBase {
         assertEq(registry.getKey(KID_HASH), MockIssuer.MODULUS);
     }
 
-    /// @dev The issuer removed a key. Then the owner sets the same attestor again. An old snapshot
-    /// with the removed key must not come back.
-    function test_snapshotFromBeforeSetAttestorIsRejected() public {
-        JWKSRegistry.Key[] memory oldKeys = MockIssuer.keys();
-        uint64 oldTime = uint64(registry.fetchedAt());
-        bytes memory oldSignature = signKeySet(ATTESTOR_KEY, oldKeys, oldTime);
-        publish(_key("test-key-2", hex"d3"), oldTime + 60);
+    /// @dev The owner sets the same attestor again, in the same second as the current key set. The
+    /// removed key set must not come back.
+    function test_setAttestorRejectsEarlierSnapshots() public {
+        JWKSRegistry.Key[] memory keys = MockIssuer.keys();
+        uint64 fetchedAt = uint64(registry.fetchedAt());
+        bytes memory signature = signKeySet(ATTESTOR_KEY, keys, fetchedAt);
 
-        vm.warp(oldTime + 120);
         registry.setAttestor(vm.addr(ATTESTOR_KEY));
-
         vm.expectRevert(JWKSRegistry.OldKeySet.selector);
-        registry.updateKeys(oldKeys, oldTime, oldSignature);
+        registry.updateKeys(keys, fetchedAt, signature);
     }
 
     function test_onlyOwnerSetsAttestor() public {
         address stranger = makeAddr("stranger");
-        vm.expectRevert(
-            abi.encodeWithSelector(Ownable.OwnableUnauthorizedAccount.selector, stranger)
-        );
+        vm.expectRevert(JWKSRegistry.NotOwner.selector);
         vm.prank(stranger);
         registry.setAttestor(stranger);
     }

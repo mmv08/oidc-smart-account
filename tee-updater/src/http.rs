@@ -2,13 +2,15 @@
 //! connection on a host, or a vsock connection to the parent proxy in the enclave.
 
 use anyhow::{Context, Result, bail, ensure};
-use rustls::pki_types::ServerName;
+use rustls::pki_types::{ServerName, UnixTime};
+use rustls::time_provider::TimeProvider;
 use rustls::{ClientConfig, ClientConnection, RootCertStore, StreamOwned};
 use std::io::{ErrorKind, Read, Write};
 use std::sync::Arc;
+use std::time::Duration;
 
 /// Maximum size of a response, with its headers.
-pub const MAX_RESPONSE_BYTES: u64 = 64 * 1024;
+const MAX_RESPONSE_BYTES: u64 = 64 * 1024;
 
 /// Parts of an `https://` or `http://` URL.
 #[derive(Debug, PartialEq, Eq)]
@@ -56,9 +58,10 @@ impl Url {
 
 /// Sends `GET url` over `stream` and returns the body of a `200` response.
 ///
-/// For `https`, TLS runs over `stream`. The server certificate must be valid for the URL host
-/// in the Mozilla root store. Thus the party that opens the stream cannot change the response.
-pub fn get(url: &Url, stream: impl Read + Write) -> Result<Vec<u8>> {
+/// For `https`, TLS runs over `stream`. The server certificate must be valid for the URL host in
+/// the Mozilla root store at the time `now` (Unix seconds). Thus the party that opens the stream
+/// cannot change the response. In the enclave, `now` comes from the NSM, not from the parent.
+pub fn get(url: &Url, stream: impl Read + Write, now: u64) -> Result<Vec<u8>> {
     let request = format!(
         "GET {} HTTP/1.0\r\nHost: {}\r\nAccept: application/json\r\n\r\n",
         url.path, url.authority
@@ -67,11 +70,14 @@ pub fn get(url: &Url, stream: impl Read + Write) -> Result<Vec<u8>> {
         let roots = RootCertStore {
             roots: webpki_roots::TLS_SERVER_ROOTS.to_vec(),
         };
-        let config =
-            ClientConfig::builder_with_provider(Arc::new(rustls::crypto::ring::default_provider()))
-                .with_safe_default_protocol_versions()?
-                .with_root_certificates(roots)
-                .with_no_client_auth();
+        let time = FixedTime(UnixTime::since_unix_epoch(Duration::from_secs(now)));
+        let config = ClientConfig::builder_with_details(
+            Arc::new(rustls::crypto::ring::default_provider()),
+            Arc::new(time),
+        )
+        .with_safe_default_protocol_versions()?
+        .with_root_certificates(roots)
+        .with_no_client_auth();
         let connection =
             ClientConnection::new(Arc::new(config), ServerName::try_from(url.host.clone())?)?;
         exchange(StreamOwned::new(connection, stream), &request)?
@@ -94,6 +100,16 @@ pub fn body(response: &[u8]) -> Result<Vec<u8>> {
         "HTTP status is not 200: {status}"
     );
     Ok(response[end + 4..].to_vec())
+}
+
+/// Gives rustls one fixed time for the certificate check.
+#[derive(Debug)]
+struct FixedTime(UnixTime);
+
+impl TimeProvider for FixedTime {
+    fn current_time(&self) -> Option<UnixTime> {
+        Some(self.0)
+    }
 }
 
 /// Writes the request and reads the response until the server closes the connection.

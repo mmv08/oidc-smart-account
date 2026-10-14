@@ -16,7 +16,6 @@ library JWTParser {
     /// @notice JWT claims that `JWTVerifier` uses.
     /// @param iss Issuer.
     /// @param aud Audience. The parser accepts only one string, not an array.
-    /// @param azp Authorized party, or empty bytes if the claim is missing.
     /// @param sub Subject: the ID of the user at the issuer.
     /// @param nonce Value that binds the JWT to one action.
     /// @param exp Expiry time in Unix seconds.
@@ -24,7 +23,6 @@ library JWTParser {
     struct Claims {
         bytes iss;
         bytes aud;
-        bytes azp;
         bytes sub;
         bytes nonce;
         uint256 exp;
@@ -58,7 +56,7 @@ library JWTParser {
     }
 
     /// @notice Reads the claims of a JWT payload.
-    /// @dev `iss`, `aud`, `sub`, `nonce`, and `exp` are necessary. `azp` and `nbf` are optional.
+    /// @dev `iss`, `aud`, `sub`, `nonce`, and `exp` are necessary. `nbf` is optional.
     function parseClaims(bytes memory json) internal pure returns (Claims memory claims) {
         uint256 seen = 0;
         for (uint256 i = _open(json); i < json.length;) {
@@ -81,13 +79,8 @@ library JWTParser {
             } else if (name == keccak256("exp")) {
                 seen = _mark(seen, 16);
                 claims.exp = _uint(json, start, end);
-            } else if (name == keccak256("azp")) {
-                seen = _mark(seen, 32);
-                claims.azp = _string(json, start, end);
-                // An empty `azp` cannot be equal to the audience. The verifier reads empty as missing.
-                if (claims.azp.length == 0) revert InvalidJSON();
             } else if (name == keccak256("nbf")) {
-                seen = _mark(seen, 64);
+                seen = _mark(seen, 32);
                 claims.nbf = _uint(json, start, end);
             }
         }

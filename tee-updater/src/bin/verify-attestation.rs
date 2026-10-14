@@ -6,7 +6,6 @@ use anyhow::{Context, Result};
 use base64::{Engine, engine::general_purpose::STANDARD};
 use clap::Parser;
 use nitro_attest::UnparsedAttestationDoc;
-use std::time::{SystemTime, UNIX_EPOCH};
 use tee_updater::{Attestation, check_attestation};
 use time::OffsetDateTime;
 
@@ -25,9 +24,6 @@ struct Args {
     pcr1: String,
     #[arg(long)]
     pcr2: String,
-    /// Maximum difference between the attestation time and now, in seconds.
-    #[arg(long, default_value_t = 300)]
-    max_age: u64,
 }
 
 fn main() -> Result<()> {
@@ -38,13 +34,11 @@ fn main() -> Result<()> {
             .as_str()
             .context("response has no attestationDocument")?,
     )?;
-    let now = SystemTime::now().duration_since(UNIX_EPOCH)?.as_secs();
 
     // This verifies the COSE signature and the certificate chain to the AWS Nitro root certificate.
     let document = UnparsedAttestationDoc::from(document.as_slice())
-        .parse_and_verify(OffsetDateTime::from_unix_timestamp(now.try_into()?)?)?;
+        .parse_and_verify(OffsetDateTime::now_utc())?;
     let attestation = Attestation {
-        timestamp: document.timestamp.unix_timestamp().try_into()?,
         pcrs: document
             .pcrs
             .into_iter()
@@ -64,7 +58,7 @@ fn main() -> Result<()> {
 
     println!(
         "{}",
-        check_attestation(&attestation, &expected_pcrs, &challenge, now, args.max_age)?
+        check_attestation(&attestation, &expected_pcrs, &challenge)?
     );
     Ok(())
 }

@@ -2,17 +2,18 @@
 
 The TEE updater gets the JWKS of an OIDC issuer and signs it for the `JWKSRegistry` contract. It runs in an AWS Nitro Enclave. For tests and demos, it can also run on a usual host (local mode).
 
-**Status:** the local mode is tested, and the Docker image builds (tested with Podman on arm64). The enclave mode has not run on a Nitro instance.
+**Status:** the local mode is tested, and the Docker image builds. The enclave mode has not run on a Nitro instance.
 
 ## Security boundary
 
 - TLS ends in the enclave. The parent instance only forwards encrypted bytes, so it cannot change the JWKS.
-- The enclave makes the attestor key in its memory when it starts. The key never leaves the enclave.
+- The enclave makes the attestor key from random bytes of the Nitro Secure Module (NSM) when it starts. The key never leaves the enclave memory.
 - A Nitro attestation document shows the image measurements (PCRs) and the attestor public key. The registry owner examines it before `setAttestor`.
-- The signed key set contains the JWKS URI, all keys, and the time from the Nitro Secure Module. The enclave reads the time before the HTTPS request, so a slow host can only make the key set look older.
+- The time comes from the NSM, not from the parent instance. The enclave uses this time for the TLS certificate check and for the signed key set. It reads the time before the HTTPS request, so a slow parent can only make the key set look older.
+- The signature binds the keys and the time to one JWKS URI, one chain, and one registry.
 - The parent instance can stop or delay updates. Nothing in this design prevents that.
 
-The updater accepts a JWKS only if each key is an RS256 signature key (`kty` RSA, `use` sig) with the exponent 65537 and a 2048-bit modulus. Otherwise it rejects the full JWKS.
+The updater accepts a JWKS only if each key is an RS256 signature key (`kty` RSA, `use` sig) with the exponent 65537 and a 2048-bit modulus. Otherwise it rejects the full JWKS. An empty JWKS removes all keys from the registry.
 
 ## Local mode
 
@@ -58,7 +59,7 @@ You need an EC2 instance with Nitro Enclaves, `nitro-cli`, `vsock-proxy`, Docker
    nitro-cli run-enclave --eif-path tee-updater.eif --cpu-count 2 --memory 512
    ```
 
-   Write down the `EnclaveCID`.
+   Write down the `EnclaveCID` as `CID`.
 
 4. Enroll the attestor. On the trusted computer, make a new random challenge:
 
@@ -81,13 +82,13 @@ You need an EC2 instance with Nitro Enclaves, `nitro-cli`, `vsock-proxy`, Docker
      --challenge "$CHALLENGE" --pcr0 "$PCR0" --pcr1 "$PCR1" --pcr2 "$PCR2")
    ```
 
-   `verify-attestation` verifies the AWS signature and the certificate chain of the document. Then it compares the PCRs, the challenge, and the time, and it shows the attestor address. Then the owner sets the attestor:
+   `verify-attestation` verifies the AWS signature and the certificate chain of the document. Then it compares the PCRs and the challenge, and it shows the attestor address. The new random challenge makes sure that the document is new. Then the owner sets the attestor:
 
    ```bash
    cast send "$REGISTRY" "setAttestor(address)" "$ATTESTOR" --rpc-url "$RPC_URL" --private-key "$OWNER_KEY"
    ```
 
-5. Send a new key set at least one time each day, because the registry rejects key sets that are older than `MAX_KEY_SET_AGE`:
+5. Send a key set immediately after `setAttestor`, and then at least one time each day. The registry rejects key sets that are older than `MAX_KEY_SET_AGE` (one day). The time of each key set must be after the block time of `setAttestor` and after the current key set.
 
    ```bash
    python3 tee-updater/scripts/request.py --cid "$CID" \
@@ -96,7 +97,7 @@ You need an EC2 instance with Nitro Enclaves, `nitro-cli`, `vsock-proxy`, Docker
      --rpc-url "$RPC_URL" --private-key "$PRIVATE_KEY" --broadcast
    ```
 
-When the enclave starts again, it has a new key. Do step 4 again. `setAttestor` removes the keys of the old attestor, so send a new key set immediately after it.
+When the enclave starts again, it has a new key. Do step 4 and step 5 again. `setAttestor` removes the keys of the old attestor.
 
 ## Code
 
@@ -105,7 +106,7 @@ When the enclave starts again, it has a new key. Do step 4 again. `setAttestor` 
 | [`src/lib.rs`](src/lib.rs) | JWKS checks, the EIP-712 digest of a key set, signatures, and attestation checks |
 | [`src/http.rs`](src/http.rs) | HTTP/1.0 GET over a stream that the caller opens: TCP in local mode, vsock in the enclave |
 | [`src/main.rs`](src/main.rs) | The `sign` command (local mode) and the `serve` command (enclave) |
-| [`src/nitro.rs`](src/nitro.rs) | Attestation documents and time from the Nitro Secure Module |
+| [`src/nitro.rs`](src/nitro.rs) | Attestation documents, random bytes, and time from the Nitro Secure Module |
 | [`src/bin/verify-attestation.rs`](src/bin/verify-attestation.rs) | Verifies an attestation document outside the enclave |
 | [`scripts/request.py`](scripts/request.py) | Sends one request to the enclave from the parent instance |
 

@@ -25,7 +25,7 @@ contract JWTVerifier {
     error InvalidJWT();
     /// @notice The RSA signature is not valid for the key that the JWT header selects.
     error InvalidSignature();
-    /// @notice The issuer, the audience, the authorized party, or the time is not correct.
+    /// @notice The issuer, the audience, or the time is not correct.
     error InvalidClaims();
 
     /// @param registry_ Registry that keeps the RSA keys of the issuer.
@@ -38,8 +38,7 @@ contract JWTVerifier {
     }
 
     /// @notice Verifies a compact JWT and returns the hashes of its `sub` and `nonce` claims.
-    /// @dev Reverts if the JWT is not valid at the current block time. If the JWT has an `azp`
-    /// claim, it must be equal to the audience. The verifier ignores `iat`.
+    /// @dev Reverts if the JWT is not valid at the current block time. The verifier ignores `iat`.
     /// @param jwt JWT in the format `base64url(header).base64url(payload).base64url(signature)`.
     /// @return subjectHash Keccak-256 hash of the `sub` claim.
     /// @return nonceHash Keccak-256 hash of the `nonce` claim.
@@ -57,6 +56,8 @@ contract JWTVerifier {
         (bytes memory alg, bytes memory kid) = JWTParser.parseHeader(_decode(token, 0, dot1));
         if (keccak256(alg) != keccak256("RS256")) revert InvalidJWT();
 
+        // The signature covers the Base64URL text. Thus the decoded header and payload are exactly
+        // what the issuer signed.
         bytes memory modulus = registry.getKey(keccak256(kid));
         bytes memory signature = _decode(token, dot2 + 1, token.length);
         if (!RSA.pkcs1Sha256(token.slice(0, dot2), signature, hex"010001", modulus)) {
@@ -66,7 +67,6 @@ contract JWTVerifier {
         JWTParser.Claims memory claims = JWTParser.parseClaims(_decode(token, dot1 + 1, dot2));
         if (
             keccak256(claims.iss) != issuerHash || keccak256(claims.aud) != audienceHash
-                || (claims.azp.length != 0 && keccak256(claims.azp) != audienceHash)
                 || claims.exp <= block.timestamp || claims.nbf > block.timestamp
         ) revert InvalidClaims();
 

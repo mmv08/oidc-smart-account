@@ -13,6 +13,7 @@ fn jwk(kid: &str, modulus: &[u8], e: &str) -> String {
 
 #[test]
 fn parses_jwks_and_sorts_keys_by_kid() {
+    assert!(parse_jwks(br#"{"keys":[]}"#).unwrap().is_empty());
     let body = format!(
         r#"{{"keys":[{},{}],"other":1}}"#,
         jwk("b", &[0xd3; 256], "AQAB"),
@@ -59,7 +60,6 @@ fn rejects_jwks_with_a_key_that_is_not_correct() {
             "{keys}"
         );
     }
-    assert!(parse_jwks(br#"{"keys":[]}"#).is_err());
 }
 
 /// The Solidity test `test_digestMatchesRustUpdater` uses the same values.
@@ -107,7 +107,6 @@ fn attestation() -> Attestation {
         .verifying_key()
         .to_sec1_point(false);
     Attestation {
-        timestamp: 1_000,
         pcrs: BTreeMap::from([
             (0, vec![0xa0; 48]),
             (1, vec![0xa1; 48]),
@@ -122,37 +121,24 @@ fn attestation() -> Attestation {
 #[test]
 fn accepts_attestation_of_expected_image_and_challenge() {
     let pcrs = [[0xa0; 48], [0xa1; 48], [0xa2; 48]];
-    let attestor = check_attestation(&attestation(), &pcrs, &[0x11; 32], 1_100, 300).unwrap();
+    let attestor = check_attestation(&attestation(), &pcrs, &[0x11; 32]).unwrap();
     assert_eq!(attestor, "0x7e5f4552091a69125d5dfcb7b8c2659029395bdf");
 }
 
 #[test]
-fn rejects_attestation_of_other_image_challenge_or_time() {
+fn rejects_attestation_of_other_image_or_challenge() {
     let pcrs = [[0xa0; 48], [0xa1; 48], [0xa2; 48]];
-    let check = |attestation: &Attestation, pcrs: &[[u8; 48]; 3], now: u64| {
-        check_attestation(attestation, pcrs, &[0x11; 32], now, 300).is_err()
+    let other_pcr2 = [[0xa0; 48], [0xa1; 48], [0xff; 48]];
+    // A debug enclave has zero PCRs.
+    let zero_pcr0 = [[0; 48], [0xa1; 48], [0xa2; 48]];
+    let other_nonce = Attestation {
+        nonce: vec![0x22; 32],
+        ..attestation()
     };
 
-    assert!(check(
-        &attestation(),
-        &[[0xa0; 48], [0xa1; 48], [0xff; 48]],
-        1_100
-    ));
-    assert!(check(
-        &attestation(),
-        &[[0; 48], [0xa1; 48], [0xa2; 48]],
-        1_100
-    ));
-    assert!(check(
-        &Attestation {
-            nonce: vec![0x22; 32],
-            ..attestation()
-        },
-        &pcrs,
-        1_100
-    ));
-    assert!(check(&attestation(), &pcrs, 1_301));
-    assert!(check(&attestation(), &pcrs, 699));
+    assert!(check_attestation(&attestation(), &other_pcr2, &[0x11; 32]).is_err());
+    assert!(check_attestation(&attestation(), &zero_pcr0, &[0x11; 32]).is_err());
+    assert!(check_attestation(&other_nonce, &pcrs, &[0x11; 32]).is_err());
 }
 
 #[test]
@@ -179,4 +165,7 @@ fn reads_url_and_http_response() {
     assert_eq!(body(b"HTTP/1.0 200 OK\r\nA: b\r\n\r\n{}").unwrap(), b"{}");
     assert!(body(b"HTTP/1.1 404 Not Found\r\n\r\n{}").is_err());
     assert!(body(b"HTTP/1.0 200 OK\r\n").is_err());
+    // The parent can cut the response. A cut JWKS is not complete JSON.
+    let cut = body(b"HTTP/1.0 200 OK\r\n\r\n{\"keys\":[").unwrap();
+    assert!(parse_jwks(&cut).is_err());
 }

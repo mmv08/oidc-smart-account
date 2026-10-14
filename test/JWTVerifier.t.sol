@@ -2,6 +2,7 @@
 pragma solidity ^0.8.37;
 
 import { Bytes } from "@openzeppelin/contracts/utils/Bytes.sol";
+import { Strings } from "@openzeppelin/contracts/utils/Strings.sol";
 import { JWKSRegistry } from "../src/JWKSRegistry.sol";
 import { JWTParser } from "../src/JWTParser.sol";
 import { JWTVerifier } from "../src/JWTVerifier.sol";
@@ -22,10 +23,11 @@ contract JWTVerifierTest is TestBase {
         assertEq(nonceHash, keccak256(bytes(NONCE)));
     }
 
-    function test_acceptsMatchingAzpPastNbfAndUnknownClaims() public view {
+    function test_acceptsCurrentNbfAndUnknownClaims() public view {
         string memory payload = string.concat(
-            '{"iss":"https://issuer.example","azp":"demo-client","aud":"demo-client",',
-            '"sub":"alice","nonce":"n","nbf":1699999000,"iat":1699999000,"exp":1700000600,',
+            '{"iss":"https://issuer.example","aud":"demo-client","sub":"alice","nonce":"n","nbf":',
+            Strings.toString(block.timestamp),
+            ',"iat":1699999000,"exp":1700000600,',
             '"name":"A \\"quoted\\" name","extra":{"nonce":"nested","list":[1,true,null]}}'
         );
 
@@ -33,7 +35,7 @@ contract JWTVerifierTest is TestBase {
         assertEq(nonceHash, keccak256("n"));
     }
 
-    function test_rejectsWrongIssuerAudienceOrAuthorizedParty() public {
+    function test_rejectsWrongIssuerOrAudience() public {
         _expectRevert(
             '{"iss":"https://other.example","aud":"demo-client","sub":"a","nonce":"n","exp":1700000600}',
             JWTVerifier.InvalidClaims.selector
@@ -42,20 +44,23 @@ contract JWTVerifierTest is TestBase {
             '{"iss":"https://issuer.example","aud":"other-client","sub":"a","nonce":"n","exp":1700000600}',
             JWTVerifier.InvalidClaims.selector
         );
-        _expectRevert(
-            '{"iss":"https://issuer.example","aud":"demo-client","azp":"other-client","sub":"a","nonce":"n","exp":1700000600}',
-            JWTVerifier.InvalidClaims.selector
-        );
     }
 
     function test_rejectsExpiredOrNotYetValidToken() public {
-        string memory jwt = MockIssuer.token("alice", NONCE, block.timestamp + 600);
-        vm.warp(block.timestamp + 600);
+        uint256 exp = block.timestamp + 600;
+        string memory jwt = MockIssuer.token("alice", NONCE, exp);
+        vm.warp(exp);
         vm.expectRevert(JWTVerifier.InvalidClaims.selector);
         verifier.verify(jwt);
 
         _expectRevert(
-            '{"iss":"https://issuer.example","aud":"demo-client","sub":"a","nonce":"n","nbf":1700000601,"exp":1700001200}',
+            string.concat(
+                '{"iss":"https://issuer.example","aud":"demo-client","sub":"a","nonce":"n","nbf":',
+                Strings.toString(exp + 1),
+                ',"exp":',
+                Strings.toString(exp + 600),
+                "}"
+            ),
             JWTVerifier.InvalidClaims.selector
         );
     }
@@ -69,7 +74,7 @@ contract JWTVerifierTest is TestBase {
         _expectRevert('{"alg":"none","kid":"test-key-1"}', payload, JWTVerifier.InvalidJWT.selector);
     }
 
-    function test_rejectsCriticalHeaderExtension() public {
+    function test_rejectsCriticalHeaderOrMissingKid() public {
         string memory payload = MockIssuer.claims("alice", NONCE, block.timestamp + 600);
 
         _expectRevert(
@@ -77,6 +82,7 @@ contract JWTVerifierTest is TestBase {
             payload,
             JWTParser.InvalidJSON.selector
         );
+        _expectRevert('{"alg":"RS256"}', payload, JWTParser.InvalidJSON.selector);
     }
 
     function test_rejectsChangedPayload() public {
@@ -101,51 +107,24 @@ contract JWTVerifierTest is TestBase {
         );
     }
 
-    function test_rejectsTokenWhenKeySetIsStale() public {
-        uint256 staleTime = registry.fetchedAt() + registry.MAX_KEY_SET_AGE() + 1;
-        vm.warp(staleTime);
-        string memory jwt = MockIssuer.token("alice", NONCE, staleTime + 600);
-
-        vm.expectRevert(JWKSRegistry.StaleKeySet.selector);
-        verifier.verify(jwt);
-    }
-
     function test_rejectsAmbiguousClaims() public {
-        // Duplicate nonce.
-        _expectRevert(
+        string[6] memory payloads = [
+            // Duplicate nonce.
             '{"iss":"https://issuer.example","aud":"demo-client","sub":"a","nonce":"n","nonce":"m","exp":1700000600}',
-            JWTParser.InvalidJSON.selector
-        );
-        // Escaped member name ("nonce" is "nonce").
-        _expectRevert(
+            // Escaped member name ("nonce" is "nonce").
             '{"iss":"https://issuer.example","aud":"demo-client","sub":"a","nonce":"n","\\u006eonce":"m","exp":1700000600}',
-            JWTParser.InvalidJSON.selector
-        );
-        // Escaped value.
-        _expectRevert(
+            // Escaped value.
             '{"iss":"https:\\/\\/issuer.example","aud":"demo-client","sub":"a","nonce":"n","exp":1700000600}',
-            JWTParser.InvalidJSON.selector
-        );
-        // Audience array.
-        _expectRevert(
+            // Audience array.
             '{"iss":"https://issuer.example","aud":["demo-client"],"sub":"a","nonce":"n","exp":1700000600}',
-            JWTParser.InvalidJSON.selector
-        );
-        // Missing exp.
-        _expectRevert(
+            // Missing exp.
             '{"iss":"https://issuer.example","aud":"demo-client","sub":"a","nonce":"n"}',
-            JWTParser.InvalidJSON.selector
-        );
-        // Empty authorized party.
-        _expectRevert(
-            '{"iss":"https://issuer.example","aud":"demo-client","azp":"","sub":"a","nonce":"n","exp":1700000600}',
-            JWTParser.InvalidJSON.selector
-        );
-        // Expiry as a string.
-        _expectRevert(
-            '{"iss":"https://issuer.example","aud":"demo-client","sub":"a","nonce":"n","exp":"1700000600"}',
-            JWTParser.InvalidJSON.selector
-        );
+            // Expiry as a string.
+            '{"iss":"https://issuer.example","aud":"demo-client","sub":"a","nonce":"n","exp":"1700000600"}'
+        ];
+        for (uint256 i = 0; i < payloads.length; ++i) {
+            _expectRevert(payloads[i], JWTParser.InvalidJSON.selector);
+        }
     }
 
     function test_rejectsMalformedJson() public {
