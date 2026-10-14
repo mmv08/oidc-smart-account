@@ -1,21 +1,19 @@
 # TEE updater
 
-The updater gets the JWKS of one OIDC issuer. It signs a key set for `JWKSRegistry`. A host sends the signed key set to the contract.
+The TEE updater gets the JWKS of an OIDC issuer and signs it for the `JWKSRegistry` contract. It runs in an AWS Nitro Enclave. For tests and demos, it can also run on a usual host (local mode).
 
-Use AWS Nitro Enclaves for the TEE path. Use local mode for the demo. **The enclave path has not run on a Nitro instance.**
+**Status:** the local mode is tested, and the Docker image builds. The enclave mode has not run on a Nitro instance.
 
 ## Security boundary
 
-- TLS ends in the enclave. The parent instance forwards encrypted bytes.
-- The Nitro Secure Module (NSM) supplies random bytes for the attestor key. The key stays in enclave memory.
-- The registry owner verifies the AWS attestation signature, image measurements (PCRs), public key, and random challenge. Then the owner calls `setAttestor`.
-- The NSM supplies the time for the TLS certificate check and the signed key set. The enclave reads the time before the HTTPS request. A delay makes the key set older.
-- The signature binds the keys and time to one JWKS URI, chain, and registry.
-- The parent instance can stop or delay updates.
+- TLS ends in the enclave. The parent instance only forwards encrypted bytes, so it cannot change the JWKS.
+- The enclave makes the attestor key from random bytes of the Nitro Secure Module (NSM) when it starts. The key never leaves the enclave memory.
+- A Nitro attestation document shows the image measurements (PCRs) and the attestor public key. The registry owner examines it before `setAttestor`.
+- The time comes from the NSM, not from the parent instance. The enclave uses this time for the TLS certificate check and for the signed key set. It reads the time before the HTTPS request, so a slow parent can only make the key set look older.
+- The signature binds the keys and the time to one JWKS URI, one chain, and one registry.
+- The parent instance can stop or delay updates. Nothing in this design prevents that.
 
-Each key must have `kty: RSA`, `alg: RS256`, `use: sig`, exponent 65537, and an odd 2048-bit modulus. Key IDs must be nonempty and distinct. The updater rejects the full JWKS if a key fails these checks. An empty JWKS removes all keys from the registry.
-
-The HTTP/1.0 client requires a `200` response. It checks `Content-Length` if present and requires complete JWKS JSON. It rejects transfer encoding and responses larger than 64 KiB, with headers. It does not follow redirects. URLs must use a DNS name or an IPv4 address, without credentials or a fragment.
+The updater accepts a JWKS only if each key is an RS256 signature key (`kty` RSA, `use` sig) with the exponent 65537 and a 2048-bit modulus. Otherwise it rejects the full JWKS. An empty JWKS removes all keys from the registry.
 
 ## Local mode
 
@@ -29,9 +27,7 @@ cargo run --manifest-path tee-updater/Cargo.toml -- sign \
   --private-key "$ATTESTOR_KEY" > snapshot.json
 ```
 
-Use a secp256k1 private key for `ATTESTOR_KEY`. Set its address as the registry attestor before the fetch. Local mode has no TEE protection.
-
-Anyone can send the signed key set. Set `REGISTRY` to the contract address that you trust:
+The private key is a usual secp256k1 key. Use this mode only for tests and demos. The output is the signed key set. Anyone can send it to the registry. The script takes the registry address from `REGISTRY`, not from the snapshot, because the snapshot is not trusted data:
 
 ```bash
 REGISTRY="$REGISTRY" SNAPSHOT="$(cat snapshot.json)" forge script script/UpdateKeys.s.sol \
@@ -40,7 +36,7 @@ REGISTRY="$REGISTRY" SNAPSHOT="$(cat snapshot.json)" forge script script/UpdateK
 
 ## Enclave mode
 
-You need an EC2 instance with Nitro Enclaves, `nitro-cli`, `vsock-proxy`, Docker, Python 3, and Foundry. Use a trusted computer to verify the attestation. Run these commands in the repository root.
+You need an EC2 instance with Nitro Enclaves, `nitro-cli`, `vsock-proxy`, Docker, Python 3, and Foundry. You also need a second computer that you trust, because the parent instance is not trusted. Run the commands in the repository root.
 
 1. Build the Docker image and the enclave image file (EIF):
 
@@ -49,7 +45,7 @@ You need an EC2 instance with Nitro Enclaves, `nitro-cli`, `vsock-proxy`, Docker
    nitro-cli build-enclave --docker-uri tee-updater --output-file tee-updater.eif
    ```
 
-   Record PCR0, PCR1, and PCR2 from a trusted build. Copy that EIF to the parent instance. Use the recorded PCRs for enrollment.
+   The output shows PCR0, PCR1, and PCR2. For the enrollment, use PCR values from a build that you trust. For example, build the EIF on the trusted computer and copy it to the parent instance. Do not trust values that the parent instance shows.
 
 2. Start the proxy from the enclave to the JWKS host. The allowlist in [`vsock-proxy.yaml`](vsock-proxy.yaml) must contain the host.
 
@@ -57,21 +53,21 @@ You need an EC2 instance with Nitro Enclaves, `nitro-cli`, `vsock-proxy`, Docker
    vsock-proxy 8443 www.googleapis.com 443 --config tee-updater/vsock-proxy.yaml &
    ```
 
-3. Start the enclave without `--debug-mode`. The verifier rejects zero PCRs from a debug enclave.
+3. Start the enclave. Do not use `--debug-mode`: a debug enclave has zero PCRs, and `verify-attestation` rejects it.
 
    ```bash
    nitro-cli run-enclave --eif-path tee-updater.eif --cpu-count 2 --memory 512
    ```
 
-   Set `CID` to the `EnclaveCID` in the output.
+   Write down the `EnclaveCID` as `CID`.
 
-4. On the trusted computer, make a new random challenge:
+4. Enroll the attestor. On the trusted computer, make a new random challenge:
 
    ```bash
    CHALLENGE=0x$(openssl rand -hex 32)
    ```
 
-   Copy the challenge to the parent instance. Ask the enclave for an attestation:
+   On the parent instance, ask the enclave for an attestation with this challenge:
 
    ```bash
    python3 tee-updater/scripts/request.py --cid "$CID" \
@@ -86,13 +82,13 @@ You need an EC2 instance with Nitro Enclaves, `nitro-cli`, `vsock-proxy`, Docker
      --challenge "$CHALLENGE" --pcr0 "$PCR0" --pcr1 "$PCR1" --pcr2 "$PCR2")
    ```
 
-   The verifier checks the AWS signature, certificate chain, PCRs, challenge, and time. It prints the attestor address. On the trusted computer, set that address in the registry:
+   `verify-attestation` verifies the AWS signature and the certificate chain of the document. Then it compares the PCRs and the challenge, and it shows the attestor address. The new random challenge makes sure that the document is new. Then the owner sets the attestor:
 
    ```bash
    cast send "$REGISTRY" "setAttestor(address)" "$ATTESTOR" --rpc-url "$RPC_URL" --private-key "$OWNER_KEY"
    ```
 
-5. Fetch and send the JWKS. The fetch time must be later than `registry.fetchedAt()`, which `setAttestor` sets to its block time. Wait for the next second before the first fetch or a repeat fetch. The chain time must reach the fetch time before you send the transaction.
+5. Send a key set immediately after `setAttestor`, and then at least one time each day. The registry rejects key sets that are older than `MAX_KEY_SET_AGE` (one day). The time of each key set must be after the block time of `setAttestor` and after the current key set.
 
    ```bash
    python3 tee-updater/scripts/request.py --cid "$CID" \
@@ -101,11 +97,18 @@ You need an EC2 instance with Nitro Enclaves, `nitro-cli`, `vsock-proxy`, Docker
      --rpc-url "$RPC_URL" --private-key "$PRIVATE_KEY" --broadcast
    ```
 
-Send a new key set before `MAX_KEY_SET_AGE` (one day) expires. The registry rejects the use of stale keys.
+When the enclave starts again, it has a new key. Do step 4 and step 5 again. `setAttestor` removes the keys of the old attestor.
 
-An enclave restart makes a new key. Repeat step 4. `setAttestor` removes the old keys. Then fetch and send a new key set.
+## Code
 
-## Checks
+| File | Function |
+| --- | --- |
+| [`src/lib.rs`](src/lib.rs) | JWKS checks, the EIP-712 digest of a key set, signatures, and attestation checks |
+| [`src/http.rs`](src/http.rs) | HTTP/1.0 GET over a stream that the caller opens: TCP in local mode, vsock in the enclave |
+| [`src/main.rs`](src/main.rs) | The `sign` command (local mode) and the `serve` command (enclave) |
+| [`src/nitro.rs`](src/nitro.rs) | Attestation documents, random bytes, and time from the Nitro Secure Module |
+| [`src/bin/verify-attestation.rs`](src/bin/verify-attestation.rs) | Verifies an attestation document outside the enclave |
+| [`scripts/request.py`](scripts/request.py) | Sends one request to the enclave from the parent instance |
 
 ```bash
 cd tee-updater

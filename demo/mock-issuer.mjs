@@ -1,5 +1,5 @@
-// Mock OIDC issuer for the demo. It makes an RSA key, serves the JWKS, and signs ID tokens.
-// It does not authenticate the user. Use it only for the local demo.
+// Mock OIDC issuer for the demo. It makes a new RSA key when it starts, shows its JWKS, and signs
+// ID tokens. It does not authenticate the user. Use it only for the local demo.
 //
 //   node demo/mock-issuer.mjs                    listens on http://127.0.0.1:9000
 //   GET /jwks.json                               returns the JWKS
@@ -30,21 +30,14 @@ function base64url(value) {
   return Buffer.from(JSON.stringify(value)).toString('base64url');
 }
 
-function reply(response, contentType, body) {
-  response.writeHead(200, {
-    'content-type': contentType,
-    'content-length': Buffer.byteLength(body),
-  }).end(body);
-}
-
 createServer((request, response) => {
   const url = new URL(request.url, 'http://localhost');
   const sub = url.searchParams.get('sub');
   const nonce = url.searchParams.get('nonce');
   if (url.pathname === '/jwks.json') {
-    reply(response, 'application/json', JSON.stringify(jwks));
+    response.writeHead(200, { 'content-type': 'application/json' }).end(JSON.stringify(jwks));
   } else if (url.pathname === '/token' && sub && nonce) {
-    reply(response, 'text/plain', idToken(sub, nonce));
+    response.writeHead(200, { 'content-type': 'text/plain' }).end(idToken(sub, nonce));
   } else {
     response.writeHead(404).end();
   }

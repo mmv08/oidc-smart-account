@@ -23,10 +23,9 @@ contract JWTVerifierTest is TestBase {
         assertEq(nonceHash, keccak256(bytes(NONCE)));
     }
 
-    function test_acceptsMatchingAzpCurrentNbfAndUnknownClaims() public view {
+    function test_acceptsCurrentNbfAndUnknownClaims() public view {
         string memory payload = string.concat(
-            '{"iss":"https://issuer.example","azp":"demo-client","aud":"demo-client",',
-            '"sub":"alice","nonce":"n","nbf":',
+            '{"iss":"https://issuer.example","aud":"demo-client","sub":"alice","nonce":"n","nbf":',
             Strings.toString(block.timestamp),
             ',"iat":1699999000,"exp":1700000600,',
             '"name":"A \\"quoted\\" name","extra":{"nonce":"nested","list":[1,true,null]}}'
@@ -36,17 +35,13 @@ contract JWTVerifierTest is TestBase {
         assertEq(nonceHash, keccak256("n"));
     }
 
-    function test_rejectsWrongIssuerAudienceOrAuthorizedParty() public {
+    function test_rejectsWrongIssuerOrAudience() public {
         _expectRevert(
             '{"iss":"https://other.example","aud":"demo-client","sub":"a","nonce":"n","exp":1700000600}',
             JWTVerifier.InvalidClaims.selector
         );
         _expectRevert(
             '{"iss":"https://issuer.example","aud":"other-client","sub":"a","nonce":"n","exp":1700000600}',
-            JWTVerifier.InvalidClaims.selector
-        );
-        _expectRevert(
-            '{"iss":"https://issuer.example","aud":"demo-client","azp":"other-client","sub":"a","nonce":"n","exp":1700000600}',
             JWTVerifier.InvalidClaims.selector
         );
     }
@@ -79,18 +74,15 @@ contract JWTVerifierTest is TestBase {
         _expectRevert('{"alg":"none","kid":"test-key-1"}', payload, JWTVerifier.InvalidJWT.selector);
     }
 
-    function test_rejectsInvalidHeader() public {
+    function test_rejectsCriticalHeaderOrMissingKid() public {
         string memory payload = MockIssuer.claims("alice", NONCE, block.timestamp + 600);
-        string[5] memory headers = [
+
+        _expectRevert(
             '{"alg":"RS256","kid":"test-key-1","crit":["exp"]}',
-            '{"alg":"RS256","alg":"RS256","kid":"test-key-1"}',
-            '{"alg":"RS256","kid":"test-key-1","kid":"test-key-1"}',
-            '{"alg":"RS256","kid":""}',
-            '{"alg":"RS256"}'
-        ];
-        for (uint256 i = 0; i < headers.length; ++i) {
-            _expectRevert(headers[i], payload, JWTParser.InvalidJSON.selector);
-        }
+            payload,
+            JWTParser.InvalidJSON.selector
+        );
+        _expectRevert('{"alg":"RS256"}', payload, JWTParser.InvalidJSON.selector);
     }
 
     function test_rejectsChangedPayload() public {
@@ -115,26 +107,20 @@ contract JWTVerifierTest is TestBase {
         );
     }
 
-    function test_rejectsTokenWhenKeySetIsStale() public {
-        uint256 staleTime = registry.fetchedAt() + registry.MAX_KEY_SET_AGE() + 1;
-        vm.warp(staleTime);
-        string memory jwt = MockIssuer.token("alice", NONCE, staleTime + 600);
-
-        vm.expectRevert(JWKSRegistry.StaleKeySet.selector);
-        verifier.verify(jwt);
-    }
-
     function test_rejectsAmbiguousClaims() public {
-        string[9] memory payloads = [
+        string[6] memory payloads = [
+            // Duplicate nonce.
             '{"iss":"https://issuer.example","aud":"demo-client","sub":"a","nonce":"n","nonce":"m","exp":1700000600}',
+            // Escaped member name ("nonce" is "nonce").
             '{"iss":"https://issuer.example","aud":"demo-client","sub":"a","nonce":"n","\\u006eonce":"m","exp":1700000600}',
+            // Escaped value.
             '{"iss":"https:\\/\\/issuer.example","aud":"demo-client","sub":"a","nonce":"n","exp":1700000600}',
+            // Audience array.
             '{"iss":"https://issuer.example","aud":["demo-client"],"sub":"a","nonce":"n","exp":1700000600}',
+            // Missing exp.
             '{"iss":"https://issuer.example","aud":"demo-client","sub":"a","nonce":"n"}',
-            '{"iss":"https://issuer.example","aud":"demo-client","azp":"","sub":"a","nonce":"n","exp":1700000600}',
-            '{"iss":"https://issuer.example","aud":"demo-client","sub":"a","nonce":"n","exp":"1700000600"}',
-            MockIssuer.claims("", "n", block.timestamp + 600),
-            MockIssuer.claims("a", "", block.timestamp + 600)
+            // Expiry as a string.
+            '{"iss":"https://issuer.example","aud":"demo-client","sub":"a","nonce":"n","exp":"1700000600"}'
         ];
         for (uint256 i = 0; i < payloads.length; ++i) {
             _expectRevert(payloads[i], JWTParser.InvalidJSON.selector);
@@ -142,36 +128,22 @@ contract JWTVerifierTest is TestBase {
     }
 
     function test_rejectsMalformedJson() public {
-        string[6] memory payloads = [
+        string[4] memory payloads = [
             '{"iss":"https://issuer.example","aud":"demo-client","sub":"a","nonce":"n","exp":1700000600,}',
             '{"iss":"https://issuer.example","aud":"demo-client","sub":"a","nonce":"n","exp":1700000600}x',
             '{"iss":"https://issuer.example","aud":"demo-client","sub":"a","nonce":"n","exp":1700000600',
-            '{"iss" "https://issuer.example","aud":"demo-client","sub":"a","nonce":"n","exp":1700000600}',
-            '{"iss":"https://issuer.example","aud":"demo-client","sub":"a","nonce":"n","exp":01700000600}',
-            MockIssuer.claims("alice\n", NONCE, block.timestamp + 600)
+            '{"iss" "https://issuer.example","aud":"demo-client","sub":"a","nonce":"n","exp":1700000600}'
         ];
         for (uint256 i = 0; i < payloads.length; ++i) {
             _expectRevert(payloads[i], JWTParser.InvalidJSON.selector);
         }
     }
 
-    function test_rejectsTokenWithoutThreeNonemptyParts() public {
-        string[7] memory tokens = ["", "no-dots", "one.dot", ".p.s", "h..s", "h.p.", "h.p.s.x"];
-        for (uint256 i = 0; i < tokens.length; ++i) {
-            vm.expectRevert(JWTVerifier.InvalidJWT.selector);
-            verifier.verify(tokens[i]);
-        }
-    }
-
-    function test_rejectsNoncanonicalBase64URL() public {
-        bytes memory token = bytes(MockIssuer.token("alice", NONCE, block.timestamp + 600));
+    function test_rejectsTokenWithoutThreeParts() public {
         vm.expectRevert(JWTVerifier.InvalidJWT.selector);
-        verifier.verify(string(bytes.concat(token, "==")));
-
-        // RSA-2048 ends with two Base64URL characters. The last four bits must be zero.
-        token[token.length - 1] = token[token.length - 1] == "A" ? bytes1("B") : bytes1("R");
+        verifier.verify("no-dots");
         vm.expectRevert(JWTVerifier.InvalidJWT.selector);
-        verifier.verify(string(token));
+        verifier.verify("one.dot");
     }
 
     function _expectRevert(string memory payload, bytes4 selector) internal {

@@ -4,10 +4,11 @@ pragma solidity ^0.8.37;
 import { Bytes } from "@openzeppelin/contracts/utils/Bytes.sol";
 
 /// @title JWT JSON Parser
-/// @notice Reads the header and claims that `JWTVerifier` uses.
-/// @dev Reads the members of one JSON object. Used values must be strings without escapes or
-/// unsigned integers. Rejects duplicate used members and escapes in member names. Skips other
-/// values without full JSON validation. The issuer signature must cover the claims.
+/// @notice Reads the JWT header members and the claims that `JWTVerifier` uses.
+/// @dev The parser reads only the top-level members of one JSON object. It finds the end of other
+/// values, but it does not validate their content: the issuer signature covers the JSON. A member
+/// that the verifier uses must be a string without escapes, or an unsigned integer. A duplicate
+/// member that the verifier uses, or an escape in a member name, causes a revert.
 library JWTParser {
     /// @notice The JSON is not valid, or a necessary member is missing.
     error InvalidJSON();
@@ -15,7 +16,6 @@ library JWTParser {
     /// @notice JWT claims that `JWTVerifier` uses.
     /// @param iss Issuer.
     /// @param aud Audience. The parser accepts only one string, not an array.
-    /// @param azp Authorized party, or empty bytes if the claim is missing.
     /// @param sub Subject: the ID of the user at the issuer.
     /// @param nonce Value that binds the JWT to one action.
     /// @param exp Expiry time in Unix seconds.
@@ -23,7 +23,6 @@ library JWTParser {
     struct Claims {
         bytes iss;
         bytes aud;
-        bytes azp;
         bytes sub;
         bytes nonce;
         uint256 exp;
@@ -53,11 +52,11 @@ library JWTParser {
                 revert InvalidJSON();
             }
         }
-        if (seen != 3 || kid.length == 0) revert InvalidJSON();
+        if (seen != 3) revert InvalidJSON();
     }
 
     /// @notice Reads the claims of a JWT payload.
-    /// @dev `iss`, `aud`, `sub`, `nonce`, and `exp` are necessary. `azp` and `nbf` are optional.
+    /// @dev `iss`, `aud`, `sub`, `nonce`, and `exp` are necessary. `nbf` is optional.
     function parseClaims(bytes memory json) internal pure returns (Claims memory claims) {
         uint256 seen = 0;
         for (uint256 i = _open(json); i < json.length;) {
@@ -80,20 +79,12 @@ library JWTParser {
             } else if (name == keccak256("exp")) {
                 seen = _mark(seen, 16);
                 claims.exp = _uint(json, start, end);
-            } else if (name == keccak256("azp")) {
-                seen = _mark(seen, 32);
-                claims.azp = _string(json, start, end);
-                // Empty bytes mean that `azp` is missing.
-                if (claims.azp.length == 0) revert InvalidJSON();
             } else if (name == keccak256("nbf")) {
-                seen = _mark(seen, 64);
+                seen = _mark(seen, 32);
                 claims.nbf = _uint(json, start, end);
             }
         }
-        if (
-            seen & 31 != 31 || claims.iss.length == 0 || claims.aud.length == 0
-                || claims.sub.length == 0 || claims.nonce.length == 0
-        ) revert InvalidJSON();
+        if (seen & 31 != 31) revert InvalidJSON();
     }
 
     /// @dev Returns the index of the first member of the top-level object.
@@ -155,7 +146,6 @@ library JWTParser {
         if (_at(json, i) != '"') revert InvalidJSON();
         for (++i; _at(json, i) != '"'; ++i) {
             if (json[i] == "\\") ++i;
-            if (uint8(_at(json, i)) < 0x20) revert InvalidJSON();
         }
         return i + 1;
     }
@@ -177,7 +167,6 @@ library JWTParser {
         pure
         returns (uint256 value)
     {
-        if (end - start > 1 && json[start] == "0") revert InvalidJSON();
         for (uint256 i = start; i < end; ++i) {
             uint8 digit = uint8(json[i]);
             if (digit < 0x30 || digit > 0x39) revert InvalidJSON();

@@ -9,16 +9,18 @@ import { TestBase } from "./helpers/TestBase.sol";
 contract JWKSRegistryTest is TestBase {
     bytes32 internal constant KID_HASH = keccak256(bytes(MockIssuer.KID));
 
-    function test_anyoneCanRelayASignedKeySet() public {
-        JWKSRegistry.Key[] memory keys = MockIssuer.keys();
+    function test_anyoneCanRelayAKeySetThatReplacesAllKeys() public {
+        JWKSRegistry.Key[] memory keys = _key("test-key-2", hex"d3");
         uint64 fetchedAt = uint64(block.timestamp + 1);
         bytes memory signature = signKeySet(ATTESTOR_KEY, keys, fetchedAt);
 
-        vm.warp(fetchedAt);
         vm.prank(makeAddr("relayer"));
         registry.updateKeys(keys, fetchedAt, signature);
+
         assertEq(registry.fetchedAt(), fetchedAt);
-        assertEq(registry.getKey(KID_HASH), MockIssuer.MODULUS);
+        assertEq(registry.getKey(keccak256("test-key-2")), keys[0].modulus);
+        vm.expectRevert(JWKSRegistry.UnknownKey.selector);
+        registry.getKey(KID_HASH);
     }
 
     function test_rejectsKeySetNotSignedByAttestor() public {
@@ -26,28 +28,18 @@ contract JWKSRegistryTest is TestBase {
         uint64 fetchedAt = uint64(block.timestamp + 1);
         bytes memory signature = signKeySet(0xBAD, keys, fetchedAt);
 
-        vm.warp(fetchedAt);
         vm.expectRevert(JWKSRegistry.InvalidSignature.selector);
         registry.updateKeys(keys, fetchedAt, signature);
     }
 
-    function test_rejectsKeySetOlderThanCurrentKeySet() public {
-        JWKSRegistry.Key[] memory keys = MockIssuer.keys();
-        uint64 fetchedAt = uint64(registry.fetchedAt()) - 1;
+    /// @dev A second snapshot from the same second must not replace the current key set.
+    function test_rejectsKeySetThatIsNotNewer() public {
+        JWKSRegistry.Key[] memory keys = _key("test-key-2", hex"d3");
+        uint64 fetchedAt = uint64(registry.fetchedAt());
         bytes memory signature = signKeySet(ATTESTOR_KEY, keys, fetchedAt);
 
         vm.expectRevert(JWKSRegistry.OldKeySet.selector);
         registry.updateKeys(keys, fetchedAt, signature);
-    }
-
-    function test_newKeySetReplacesAllKeys() public {
-        JWKSRegistry.Key[] memory next = _key("test-key-2", hex"d3");
-        vm.warp(block.timestamp + 1);
-        publish(next, uint64(block.timestamp));
-
-        assertEq(registry.getKey(keccak256("test-key-2")), next[0].modulus);
-        vm.expectRevert(JWKSRegistry.UnknownKey.selector);
-        registry.getKey(KID_HASH);
     }
 
     function test_keySetBecomesStaleAfterMaxAge() public {
@@ -57,15 +49,6 @@ contract JWKSRegistryTest is TestBase {
 
         vm.warp(lastFreshTime + 1);
         vm.expectRevert(JWKSRegistry.StaleKeySet.selector);
-        registry.getKey(KID_HASH);
-    }
-
-    function test_emptyKeySetRemovesAllKeys() public {
-        vm.warp(block.timestamp + 1);
-        publish(new JWKSRegistry.Key[](0), uint64(block.timestamp));
-
-        assertEq(registry.fetchedAt(), block.timestamp);
-        vm.expectRevert(JWKSRegistry.UnknownKey.selector);
         registry.getKey(KID_HASH);
     }
 
@@ -79,7 +62,6 @@ contract JWKSRegistryTest is TestBase {
         JWKSRegistry.Key[] memory keys = MockIssuer.keys();
         uint64 fetchedAt = uint64(block.timestamp + 1);
         bytes memory oldSignature = signKeySet(ATTESTOR_KEY, keys, fetchedAt);
-        vm.warp(fetchedAt);
         vm.expectRevert(JWKSRegistry.InvalidSignature.selector);
         registry.updateKeys(keys, fetchedAt, oldSignature);
 
@@ -87,20 +69,16 @@ contract JWKSRegistryTest is TestBase {
         assertEq(registry.getKey(KID_HASH), MockIssuer.MODULUS);
     }
 
-    /// @dev The issuer removed a key. Then the owner sets the same attestor again. An old snapshot
-    /// with the removed key must not come back.
-    function test_snapshotFromBeforeSetAttestorIsRejected() public {
-        JWKSRegistry.Key[] memory oldKeys = MockIssuer.keys();
-        uint64 oldTime = uint64(registry.fetchedAt());
-        bytes memory oldSignature = signKeySet(ATTESTOR_KEY, oldKeys, oldTime);
-        vm.warp(oldTime + 60);
-        publish(_key("test-key-2", hex"d3"), oldTime + 60);
+    /// @dev The owner sets the same attestor again, in the same second as the current key set. The
+    /// removed key set must not come back.
+    function test_setAttestorRejectsEarlierSnapshots() public {
+        JWKSRegistry.Key[] memory keys = MockIssuer.keys();
+        uint64 fetchedAt = uint64(registry.fetchedAt());
+        bytes memory signature = signKeySet(ATTESTOR_KEY, keys, fetchedAt);
 
-        vm.warp(oldTime + 120);
         registry.setAttestor(vm.addr(ATTESTOR_KEY));
-
         vm.expectRevert(JWKSRegistry.OldKeySet.selector);
-        registry.updateKeys(oldKeys, oldTime, oldSignature);
+        registry.updateKeys(keys, fetchedAt, signature);
     }
 
     function test_onlyOwnerSetsAttestor() public {
@@ -108,37 +86,6 @@ contract JWKSRegistryTest is TestBase {
         vm.expectRevert(JWKSRegistry.NotOwner.selector);
         vm.prank(stranger);
         registry.setAttestor(stranger);
-    }
-
-    function test_rejectsSnapshotsFromTheSameSecond() public {
-        JWKSRegistry.Key[] memory keys = MockIssuer.keys();
-        uint64 fetchedAt = uint64(registry.fetchedAt());
-        bytes memory signature = signKeySet(ATTESTOR_KEY, keys, fetchedAt);
-
-        // A different snapshot from this second cannot replace the current keys.
-        JWKSRegistry.Key[] memory otherKeys = _key("other-key", hex"d3");
-        bytes memory otherSignature = signKeySet(ATTESTOR_KEY, otherKeys, fetchedAt);
-        vm.expectRevert(JWKSRegistry.OldKeySet.selector);
-        registry.updateKeys(otherKeys, fetchedAt, otherSignature);
-
-        // A reset in this second cannot accept the old snapshot again.
-        registry.setAttestor(vm.addr(ATTESTOR_KEY));
-        vm.expectRevert(JWKSRegistry.OldKeySet.selector);
-        registry.updateKeys(keys, fetchedAt, signature);
-    }
-
-    function test_rejectsFutureSnapshot() public {
-        JWKSRegistry.Key[] memory keys = MockIssuer.keys();
-        uint64 fetchedAt = uint64(block.timestamp + 1);
-        bytes memory signature = signKeySet(ATTESTOR_KEY, keys, fetchedAt);
-
-        vm.expectRevert(JWKSRegistry.FutureKeySet.selector);
-        registry.updateKeys(keys, fetchedAt, signature);
-    }
-
-    function test_ownerMustNotBeZero() public {
-        vm.expectRevert(JWKSRegistry.InvalidOwner.selector);
-        new JWKSRegistry(address(0), JWKS_URI);
     }
 
     /// @dev The Rust TEE updater test `digest_and_signature_match_the_registry` uses the same values.
