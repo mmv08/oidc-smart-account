@@ -13,6 +13,7 @@ fn jwk(kid: &str, modulus: &[u8], e: &str) -> String {
 
 #[test]
 fn parses_jwks_and_sorts_keys_by_kid() {
+    assert!(parse_jwks(br#"{"keys":[]}"#).unwrap().is_empty());
     let body = format!(
         r#"{{"keys":[{},{}],"other":1}}"#,
         jwk("b", &[0xd3; 256], "AQAB"),
@@ -44,6 +45,7 @@ fn rejects_jwks_with_a_key_that_is_not_correct() {
         jwk("a", &[0xc1; 255], "AQAB"),
         jwk("a", &[0x41; 256], "AQAB"),
         jwk("a", &even, "AQAB"),
+        jwk("", &[0xc1; 256], "AQAB"),
         jwk("a", &[0xc1; 256], "AQAB").replace("RS256", "RS512"),
         jwk("a", &[0xc1; 256], "AQAB").replace(r#""use":"sig""#, r#""use":"enc""#),
         jwk("a", &[0xc1; 256], "AQAB").replace(r#""kid":"a""#, r#""kid":"a","kid":"b""#),
@@ -59,7 +61,6 @@ fn rejects_jwks_with_a_key_that_is_not_correct() {
             "{keys}"
         );
     }
-    assert!(parse_jwks(br#"{"keys":[]}"#).is_err());
 }
 
 /// The Solidity test `test_digestMatchesRustUpdater` uses the same values.
@@ -156,7 +157,7 @@ fn rejects_attestation_of_other_image_challenge_or_time() {
 }
 
 #[test]
-fn reads_url_and_http_response() {
+fn reads_url() {
     assert_eq!(
         Url::parse("http://127.0.0.1:9000/jwks.json").unwrap(),
         Url {
@@ -173,10 +174,54 @@ fn reads_url_and_http_response() {
             .port,
         443
     );
-    assert!(Url::parse("ftp://example.com/").is_err());
-    assert!(Url::parse("https://example.com/a\r\nX: y").is_err());
+    assert_eq!(
+        Url::parse("https://example.com?key=1").unwrap().path,
+        "/?key=1"
+    );
+    assert_eq!(Url::parse("https://example.com").unwrap().path, "/");
+    for url in [
+        "ftp://example.com/",
+        "https://example.com/a\r\nX: y",
+        "https:///jwks",
+        "https://user@example.com/jwks",
+        "https://example.com/jwks#fragment",
+        "https://example.com:0/jwks",
+        "https://example.com:+443/jwks",
+        "https://example.com:443:80/jwks",
+        "https://[::1]/jwks",
+        "https://example.com\\other/jwks",
+    ] {
+        assert!(Url::parse(url).is_err(), "{url}");
+    }
+}
 
-    assert_eq!(body(b"HTTP/1.0 200 OK\r\nA: b\r\n\r\n{}").unwrap(), b"{}");
-    assert!(body(b"HTTP/1.1 404 Not Found\r\n\r\n{}").is_err());
-    assert!(body(b"HTTP/1.0 200 OK\r\n").is_err());
+#[test]
+fn requires_a_complete_http_body() {
+    assert_eq!(
+        body(b"HTTP/1.0 200 OK\r\ncontent-length: 2\r\n\r\n{}").unwrap(),
+        b"{}"
+    );
+    assert_eq!(body(b"HTTP/1.0 200 OK\r\n\r\n{}").unwrap(), b"{}");
+    for response in [
+        &b"HTTP/1.1 404 Not Found\r\nContent-Length: 2\r\n\r\n{}"[..],
+        &b"HTTP/1.0 200 OK\r\n"[..],
+        &b"HTTP/1.0 200 OK\r\nContent-Length: 3\r\n\r\n{}"[..],
+        &b"HTTP/1.0 200 OK\r\nContent-Length: 1\r\n\r\n{}"[..],
+        &b"HTTP/1.0 200 OK\r\nContent-Length: +2\r\n\r\n{}"[..],
+        &b"HTTP/1.0 200 OK\r\nContent-Length: -2\r\n\r\n{}"[..],
+        &b"HTTP/1.0 200 OK\r\nContent-Length:\r\n\r\n{}"[..],
+        &b"HTTP/1.0 200 OK\r\nContent-Length: 2\r\nContent-Length: 2\r\n\r\n{}"[..],
+        &b"HTTP/1.0 200 OK\r\nTransfer-Encoding: chunked\r\nContent-Length: 2\r\n\r\n{}"[..],
+        &b"HTTP/1.0 200 OK\r\nContent-Length 2\r\n\r\n{}"[..],
+        &b"HTTP/1.0 200 OK\r\nContent-Length : 3\r\n\r\n{}"[..],
+        &b"HTTP/1.X 200 OK\r\nContent-Length: 2\r\n\r\n{}"[..],
+    ] {
+        assert!(
+            body(response).is_err(),
+            "{}",
+            String::from_utf8_lossy(response)
+        );
+    }
+    let incomplete = body(b"HTTP/1.0 200 OK\r\n\r\n{\"keys\":[").unwrap();
+    assert!(parse_jwks(&incomplete).is_err());
 }

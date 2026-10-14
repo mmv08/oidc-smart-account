@@ -1,5 +1,5 @@
-// Mock OIDC issuer for the demo. It makes a new RSA key when it starts, shows its JWKS, and signs
-// ID tokens. It does not authenticate the user. Do not use it in production.
+// Mock OIDC issuer for the demo. It makes an RSA key, serves the JWKS, and signs ID tokens.
+// It does not authenticate the user. Use it only for the local demo.
 //
 //   node demo/mock-issuer.mjs                    listens on http://127.0.0.1:9000
 //   GET /jwks.json                               returns the JWKS
@@ -8,9 +8,9 @@
 import { generateKeyPairSync, sign } from 'node:crypto';
 import { createServer } from 'node:http';
 
-const PORT = Number(process.env.PORT ?? 9000);
-const ISSUER = process.env.ISSUER ?? 'https://issuer.example';
-const AUDIENCE = process.env.AUDIENCE ?? 'demo-client';
+const PORT = 9000;
+const ISSUER = 'https://issuer.example';
+const AUDIENCE = 'demo-client';
 const KID = 'mock-key-1';
 
 const { privateKey, publicKey } = generateKeyPairSync('rsa', { modulusLength: 2048 });
@@ -30,14 +30,21 @@ function base64url(value) {
   return Buffer.from(JSON.stringify(value)).toString('base64url');
 }
 
+function reply(response, contentType, body) {
+  response.writeHead(200, {
+    'content-type': contentType,
+    'content-length': Buffer.byteLength(body),
+  }).end(body);
+}
+
 createServer((request, response) => {
   const url = new URL(request.url, 'http://localhost');
   const sub = url.searchParams.get('sub');
   const nonce = url.searchParams.get('nonce');
   if (url.pathname === '/jwks.json') {
-    response.writeHead(200, { 'content-type': 'application/json' }).end(JSON.stringify(jwks));
+    reply(response, 'application/json', JSON.stringify(jwks));
   } else if (url.pathname === '/token' && sub && nonce) {
-    response.writeHead(200, { 'content-type': 'text/plain' }).end(idToken(sub, nonce));
+    reply(response, 'text/plain', idToken(sub, nonce));
   } else {
     response.writeHead(404).end();
   }

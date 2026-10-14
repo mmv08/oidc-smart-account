@@ -78,7 +78,8 @@ fn main() -> Result<()> {
             let fetched_at = SystemTime::now().duration_since(UNIX_EPOCH)?.as_secs();
             let stream = TcpStream::connect((url.host.as_str(), url.port))?;
             stream.set_read_timeout(Some(TIMEOUT))?;
-            let keys = parse_jwks(&http::get(&url, stream)?)?;
+            stream.set_write_timeout(Some(TIMEOUT))?;
+            let keys = parse_jwks(&http::get(&url, stream, fetched_at)?)?;
             let snapshot = sign_snapshot(&key, chain_id, &registry, &jwks_uri, keys, fetched_at)?;
             println!("{}", serde_json::to_string_pretty(&snapshot)?);
             Ok(())
@@ -90,9 +91,7 @@ fn main() -> Result<()> {
 /// Answers one request at a time. The attestor key stays in the enclave memory. A restart makes a
 /// new key, and the owner must set it in the registry again.
 fn serve(port: u32, proxy_port: u32) -> Result<()> {
-    let mut secret = [0; 32];
-    getrandom::fill(&mut secret)?;
-    let key = SigningKey::from_slice(&secret)?;
+    let key = SigningKey::from_slice(&nitro::random()?)?;
     println!("attestor {}", address(key.verifying_key()));
     let listener = VsockListener::bind_with_cid_port(VMADDR_CID_ANY, port)?;
     for stream in listener.incoming() {
@@ -106,12 +105,20 @@ fn serve(port: u32, proxy_port: u32) -> Result<()> {
 
 fn handle(key: &SigningKey, proxy_port: u32, stream: &mut VsockStream) -> Result<Value> {
     stream.set_read_timeout(Some(TIMEOUT))?;
+    stream.set_write_timeout(Some(TIMEOUT))?;
     let mut request = Vec::new();
-    stream.take(MAX_REQUEST_BYTES).read_to_end(&mut request)?;
+    stream
+        .take(MAX_REQUEST_BYTES + 1)
+        .read_to_end(&mut request)?;
+    ensure!(
+        request.len() as u64 <= MAX_REQUEST_BYTES,
+        "request is too large"
+    );
     match serde_json::from_slice(&request)? {
         Request::Attest { challenge } => {
             let public_key = key.verifying_key().to_sec1_point(false);
             let challenge = hex::decode(challenge.trim_start_matches("0x"))?;
+            ensure!(challenge.len() == 32, "challenge is not 32 bytes");
             let document =
                 nitro::attestation_document(Some(public_key.as_bytes()), Some(&challenge))?;
             Ok(json!({
@@ -130,7 +137,8 @@ fn handle(key: &SigningKey, proxy_port: u32, stream: &mut VsockStream) -> Result
             let fetched_at = nitro::time()?;
             let proxy = VsockStream::connect(&VsockAddr::new(PARENT_CID, proxy_port))?;
             proxy.set_read_timeout(Some(TIMEOUT))?;
-            let keys = parse_jwks(&http::get(&url, proxy)?)?;
+            proxy.set_write_timeout(Some(TIMEOUT))?;
+            let keys = parse_jwks(&http::get(&url, proxy, fetched_at)?)?;
             Ok(serde_json::to_value(sign_snapshot(
                 key, chain_id, &registry, &jwks_uri, keys, fetched_at,
             )?)?)

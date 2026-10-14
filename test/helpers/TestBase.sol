@@ -18,6 +18,7 @@ abstract contract TestBase is Test {
         vm.warp(1_700_000_000);
         registry = new JWKSRegistry(address(this), JWKS_URI);
         registry.setAttestor(vm.addr(ATTESTOR_KEY));
+        vm.warp(block.timestamp + 1);
         publish(MockIssuer.keys(), uint64(block.timestamp));
         verifier = new JWTVerifier(registry, MockIssuer.ISSUER, MockIssuer.AUDIENCE);
     }

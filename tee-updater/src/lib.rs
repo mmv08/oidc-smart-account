@@ -56,6 +56,7 @@ pub fn parse_jwks(body: &[u8]) -> Result<Vec<Key>> {
     let mut keys = Vec::with_capacity(jwks.keys.len());
     for jwk in jwks.keys {
         let kid = jwk.kid;
+        ensure!(!kid.is_empty(), "key kid is empty");
         ensure!(
             jwk.kty == "RSA" && jwk.alg == "RS256" && jwk.key_use == "sig",
             "key {kid} is not an RS256 signature key"
@@ -71,7 +72,6 @@ pub fn parse_jwks(body: &[u8]) -> Result<Vec<Key>> {
         );
         keys.push(Key { kid, modulus });
     }
-    ensure!(!keys.is_empty(), "JWKS has no keys");
     keys.sort_by(|a, b| a.kid.cmp(&b.kid));
     ensure!(
         keys.windows(2).all(|pair| pair[0].kid != pair[1].kid),

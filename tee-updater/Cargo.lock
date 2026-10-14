@@ -1188,7 +1188,6 @@ dependencies = [
  "aws-nitro-enclaves-nsm-api 0.5.2",
  "base64",
  "clap",
- "getrandom 0.4.3",
  "hex",
  "k256",
  "nitro_attest",

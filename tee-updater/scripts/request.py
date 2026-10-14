@@ -9,6 +9,7 @@ Run this script on the parent instance. Examples:
 """
 
 import argparse
+import json
 import socket
 import sys
 
@@ -27,4 +28,7 @@ with socket.socket(socket.AF_VSOCK, socket.SOCK_STREAM) as connection:
     while chunk := connection.recv(65536):
         response += chunk
 
+result = json.loads(response)
+if "error" in result:
+    parser.exit(1, result["error"] + "\n")
 sys.stdout.write(response.decode() + "\n")

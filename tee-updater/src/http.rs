@@ -2,10 +2,11 @@
 //! connection on a host, or a vsock connection to the parent proxy in the enclave.
 
 use anyhow::{Context, Result, bail, ensure};
-use rustls::pki_types::ServerName;
+use rustls::pki_types::{ServerName, UnixTime};
+use rustls::time_provider::TimeProvider;
 use rustls::{ClientConfig, ClientConnection, RootCertStore, StreamOwned};
 use std::io::{ErrorKind, Read, Write};
-use std::sync::Arc;
+use std::{sync::Arc, time::Duration};
 
 /// Maximum size of a response, with its headers.
 pub const MAX_RESPONSE_BYTES: u64 = 64 * 1024;
@@ -34,12 +35,30 @@ impl Url {
         } else {
             bail!("URL must start with https:// or http://");
         };
-        let (authority, path) = rest.split_at(rest.find('/').unwrap_or(rest.len()));
+        ensure!(
+            !rest.contains(['#', '\\']),
+            "URL has a fragment or a backslash"
+        );
+        let (authority, path) = rest.split_at(rest.find(['/', '?']).unwrap_or(rest.len()));
+        ensure!(!authority.contains('@'), "URL has credentials");
         let (host, port) = match authority.split_once(':') {
-            Some((host, port)) => (host, port.parse().context("URL port is not valid")?),
+            Some((host, port)) => {
+                ensure!(
+                    !port.is_empty() && port.bytes().all(|byte| byte.is_ascii_digit()),
+                    "URL port is not valid"
+                );
+                (host, port.parse().context("URL port is not valid")?)
+            }
             None => (authority, if https { 443 } else { 80 }),
         };
-        ensure!(!host.is_empty(), "URL has no host");
+        ensure!(
+            !host.is_empty()
+                && host
+                    .bytes()
+                    .all(|byte| byte.is_ascii_alphanumeric() || b".-".contains(&byte)),
+            "URL host must be a DNS name or an IPv4 address"
+        );
+        ensure!(port != 0, "URL port is zero");
         Ok(Self {
             https,
             authority: authority.to_owned(),
@@ -47,6 +66,8 @@ impl Url {
             port,
             path: if path.is_empty() {
                 "/".to_owned()
+            } else if path.starts_with('?') {
+                format!("/{path}")
             } else {
                 path.to_owned()
             },
@@ -57,8 +78,9 @@ impl Url {
 /// Sends `GET url` over `stream` and returns the body of a `200` response.
 ///
 /// For `https`, TLS runs over `stream`. The server certificate must be valid for the URL host
-/// in the Mozilla root store. Thus the party that opens the stream cannot change the response.
-pub fn get(url: &Url, stream: impl Read + Write) -> Result<Vec<u8>> {
+/// in the Mozilla root store at `now` (Unix seconds). In the enclave, use NSM time.
+/// Checks `Content-Length` if present. Transfer encoding is not supported.
+pub fn get(url: &Url, stream: impl Read + Write, now: u64) -> Result<Vec<u8>> {
     let request = format!(
         "GET {} HTTP/1.0\r\nHost: {}\r\nAccept: application/json\r\n\r\n",
         url.path, url.authority
@@ -67,11 +89,15 @@ pub fn get(url: &Url, stream: impl Read + Write) -> Result<Vec<u8>> {
         let roots = RootCertStore {
             roots: webpki_roots::TLS_SERVER_ROOTS.to_vec(),
         };
-        let config =
-            ClientConfig::builder_with_provider(Arc::new(rustls::crypto::ring::default_provider()))
-                .with_safe_default_protocol_versions()?
-                .with_root_certificates(roots)
-                .with_no_client_auth();
+        let config = ClientConfig::builder_with_details(
+            Arc::new(rustls::crypto::ring::default_provider()),
+            Arc::new(FetchTime(UnixTime::since_unix_epoch(Duration::from_secs(
+                now,
+            )))),
+        )
+        .with_safe_default_protocol_versions()?
+        .with_root_certificates(roots)
+        .with_no_client_auth();
         let connection =
             ClientConnection::new(Arc::new(config), ServerName::try_from(url.host.clone())?)?;
         exchange(StreamOwned::new(connection, stream), &request)?
@@ -81,19 +107,63 @@ pub fn get(url: &Url, stream: impl Read + Write) -> Result<Vec<u8>> {
     body(&response)
 }
 
-/// Returns the body of an HTTP response if its status is `200`.
+/// Returns the complete body of an HTTP response if its status is `200`.
 pub fn body(response: &[u8]) -> Result<Vec<u8>> {
     let end = response
         .windows(4)
         .position(|window| window == b"\r\n\r\n")
         .context("HTTP response has no end of headers")?;
     let head = std::str::from_utf8(&response[..end]).context("HTTP headers are not UTF-8")?;
-    let status = head.lines().next().unwrap_or_default();
+    let mut lines = head.split("\r\n");
+    let status = lines.next().unwrap_or_default();
+    let mut parts = status.split(' ');
     ensure!(
-        status.starts_with("HTTP/1.") && status.split(' ').nth(1) == Some("200"),
+        matches!(parts.next(), Some("HTTP/1.0" | "HTTP/1.1")) && parts.next() == Some("200"),
         "HTTP status is not 200: {status}"
     );
-    Ok(response[end + 4..].to_vec())
+    let mut content_length = None;
+    for line in lines {
+        let (name, value) = line.split_once(':').context("HTTP header is not valid")?;
+        ensure!(
+            !name.is_empty()
+                && name
+                    .bytes()
+                    .all(|byte| byte.is_ascii_alphanumeric() || b"!#$%&'*+-.^_`|~".contains(&byte)),
+            "HTTP header name is not valid"
+        );
+        ensure!(
+            !name.eq_ignore_ascii_case("transfer-encoding"),
+            "HTTP transfer encoding is not supported"
+        );
+        if name.eq_ignore_ascii_case("content-length") {
+            ensure!(
+                content_length.is_none(),
+                "HTTP has duplicate Content-Length"
+            );
+            let value = value.trim();
+            ensure!(
+                !value.is_empty() && value.bytes().all(|byte| byte.is_ascii_digit()),
+                "HTTP Content-Length is not valid"
+            );
+            content_length = Some(value.parse::<usize>()?);
+        }
+    }
+    let body = &response[end + 4..];
+    ensure!(
+        content_length.is_none_or(|length| length == body.len()),
+        "HTTP body length does not match Content-Length"
+    );
+    Ok(body.to_vec())
+}
+
+/// Uses the snapshot time for the TLS certificate check.
+#[derive(Debug)]
+struct FetchTime(UnixTime);
+
+impl TimeProvider for FetchTime {
+    fn current_time(&self) -> Option<UnixTime> {
+        Some(self.0)
+    }
 }
 
 /// Writes the request and reads the response until the server closes the connection.
@@ -106,8 +176,9 @@ fn exchange(mut stream: impl Read + Write, request: &str) -> Result<Vec<u8>> {
         .read_to_end(&mut response)
     {
         Ok(_) => {}
-        // Many servers (Google too) close TLS without `close_notify`. This is safe here: a cut
-        // response is not complete JSON, thus `parse_jwks` rejects it.
+        // Some servers omit TLS close_notify. Check Content-Length if present.
+        // parse_jwks rejects incomplete JSON. For a valid JWKS, a complete JSON prefix
+        // differs only in trailing whitespace.
         Err(error) if error.kind() == ErrorKind::UnexpectedEof => {}
         Err(error) => return Err(error.into()),
     }

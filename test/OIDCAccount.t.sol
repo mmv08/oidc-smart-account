@@ -96,6 +96,10 @@ contract OIDCAccountTest is TestBase {
     function test_onlySignerExecutes() public {
         vm.expectRevert(OIDCAccount.NotSigner.selector);
         account.execute(address(target), 0, abi.encodeCall(Target.set, (1)));
+
+        account.setSigner(_token("alice", signer), signer);
+        vm.expectRevert(OIDCAccount.NotSigner.selector);
+        account.execute(address(target), 0, abi.encodeCall(Target.set, (1)));
     }
 
     function test_executeRevertsWithTargetError() public {

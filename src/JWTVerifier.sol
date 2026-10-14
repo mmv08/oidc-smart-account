@@ -8,9 +8,8 @@ import { JWKSRegistry } from "./JWKSRegistry.sol";
 import { JWTParser } from "./JWTParser.sol";
 
 /// @title JWT Verifier
-/// @notice Verifies RS256 JWTs from one OIDC issuer for one audience.
-/// @dev The verifier gets the issuer keys from `registry`. It does not know which action a JWT
-/// approves: the caller must compare the returned nonce hash with its action.
+/// @notice Checks RS256 JWTs from one OIDC issuer for one audience.
+/// @dev The caller must compare the returned nonce hash with its action.
 contract JWTVerifier {
     using Bytes for bytes;
 
@@ -21,7 +20,7 @@ contract JWTVerifier {
     /// @notice Hash of the `aud` claim (the OAuth client ID) that a JWT must have.
     bytes32 public immutable audienceHash;
 
-    /// @notice The JWT does not have three parts, or its algorithm is not RS256.
+    /// @notice The JWT format or algorithm is not supported.
     error InvalidJWT();
     /// @notice The RSA signature is not valid for the key that the JWT header selects.
     error InvalidSignature();
@@ -37,9 +36,8 @@ contract JWTVerifier {
         audienceHash = keccak256(bytes(audience));
     }
 
-    /// @notice Verifies a compact JWT and returns the hashes of its `sub` and `nonce` claims.
-    /// @dev Reverts if the JWT is not valid at the current block time. If the JWT has an `azp`
-    /// claim, it must be equal to the audience. The verifier ignores `iat`.
+    /// @notice Checks a compact JWT and returns the hashes of `sub` and `nonce`.
+    /// @dev Checks `exp`, `nbf`, and `azp`. The caller checks the nonce. Does not use `iat`.
     /// @param jwt JWT in the format `base64url(header).base64url(payload).base64url(signature)`.
     /// @return subjectHash Keccak-256 hash of the `sub` claim.
     /// @return nonceHash Keccak-256 hash of the `nonce` claim.
@@ -50,9 +48,12 @@ contract JWTVerifier {
     {
         bytes memory token = bytes(jwt);
         uint256 dot1 = token.indexOf(".");
-        if (dot1 == type(uint256).max) revert InvalidJWT();
+        if (dot1 == 0 || dot1 == type(uint256).max) revert InvalidJWT();
         uint256 dot2 = token.indexOf(".", dot1 + 1);
-        if (dot2 == type(uint256).max) revert InvalidJWT();
+        if (
+            dot2 == type(uint256).max || dot2 == dot1 + 1 || dot2 + 1 == token.length
+                || token.indexOf(".", dot2 + 1) != type(uint256).max
+        ) revert InvalidJWT();
 
         (bytes memory alg, bytes memory kid) = JWTParser.parseHeader(_decode(token, 0, dot1));
         if (keccak256(alg) != keccak256("RS256")) revert InvalidJWT();
@@ -73,12 +74,15 @@ contract JWTVerifier {
         return (keccak256(claims.sub), keccak256(claims.nonce));
     }
 
-    /// @dev Decodes the Base64URL part of `token` from `start` to `end`.
+    /// @dev Decodes one part. Encode it again to require Base64URL without padding.
     function _decode(bytes memory token, uint256 start, uint256 end)
         private
         pure
-        returns (bytes memory)
+        returns (bytes memory decoded)
     {
-        return Base64.decode(string(token.slice(start, end)));
+        bytes memory encoded = token.slice(start, end);
+        if (encoded.length % 4 == 1) revert InvalidJWT();
+        decoded = Base64.decode(string(encoded));
+        if (keccak256(encoded) != keccak256(bytes(Base64.encodeURL(decoded)))) revert InvalidJWT();
     }
 }
