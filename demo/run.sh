@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Runs the full flow on a local Anvil chain:
-#   mock issuer -> TEE updater (local mode) -> JWKSRegistry -> JWT -> OIDCAccount -> transaction
+#   mock issuer -> TEE updater (local mode) -> key registry -> ID token -> account -> transaction
 # Necessary tools: Foundry (anvil, forge, cast), Rust (cargo), Node.js, and curl.
 set -euo pipefail
 cd "$(dirname "$0")/.."
@@ -45,23 +45,23 @@ for _ in {1..50}; do
   sleep 0.1
 done
 
-step "1. Deploy the registry for the JWKS URI, and the verifier for the issuer and the audience"
+step "1. Deploy the key registry for the JWKS URI, and the token verifier for the issuer and the app"
 REGISTRY=$(deploy src/JWKSRegistry.sol:JWKSRegistry --constructor-args "$OWNER" "$JWKS_URI")
 VERIFIER=$(deploy src/JWTVerifier.sol:JWTVerifier --constructor-args "$REGISTRY" "$ISSUER" "$AUDIENCE")
 echo "JWKSRegistry $REGISTRY"
 echo "JWTVerifier  $VERIFIER"
 
-step "2. The owner sets the attestor (with an enclave: after verify-attestation)"
+step "2. The owner sets the attestor key (with an enclave: after the attestation check)"
 send --private-key "$OWNER_KEY" "$REGISTRY" "setAttestor(address)" "$ATTESTOR"
 echo "attestor $ATTESTOR"
 
-step "3. The TEE updater gets the issuer JWKS and signs it. A relayer sends the snapshot."
-# The snapshot time must be after the block time of setAttestor.
+step "3. The TEE updater gets the JWKS and signs it. Anyone can send the signed key set."
+# The time of the key set must be after the block time of setAttestor.
 SET_AT=$(call "$REGISTRY" "fetchedAt()(uint256)" | cut -d' ' -f1)
 while (($(date +%s) <= SET_AT)); do sleep 0.2; done
-SNAPSHOT=$(tee-updater/target/debug/tee-updater sign --jwks-uri "$JWKS_URI" --chain-id 31337 \
+KEY_SET=$(tee-updater/target/debug/tee-updater sign --jwks-uri "$JWKS_URI" --chain-id 31337 \
   --registry "$REGISTRY" --private-key "$ATTESTOR_KEY")
-REGISTRY="$REGISTRY" SNAPSHOT="$SNAPSHOT" forge script script/UpdateKeys.s.sol --rpc-url "$RPC_URL" \
+REGISTRY="$REGISTRY" KEY_SET="$KEY_SET" forge script script/UpdateKeys.s.sol --rpc-url "$RPC_URL" \
   --private-key "$OWNER_KEY" --broadcast --silent
 echo "key mock-key-1: $(call "$REGISTRY" "getKey(bytes32)(bytes)" "$(cast keccak mock-key-1)" | cut -c1-20)..."
 
@@ -70,24 +70,24 @@ ACCOUNT=$(deploy src/OIDCAccount.sol:OIDCAccount --constructor-args "$VERIFIER" 
 send --private-key "$OWNER_KEY" --value 1ether "$ACCOUNT"
 echo "OIDCAccount $ACCOUNT"
 
-step "5. The user gets a JWT whose nonce approves the new signer. Anyone can send it."
+step "5. The user logs in with the nonce for a new signing key. Anyone can send the ID token."
 NONCE=$(call "$ACCOUNT" "jwtNonce(address)(string)" "$SIGNER" | tr -d '"')
 JWT=$(curl -fs "http://127.0.0.1:9000/token?sub=$SUB&nonce=$NONCE")
 echo "nonce $NONCE"
 echo "JWT   ${JWT:0:40}..."
 send --private-key "$OWNER_KEY" "$ACCOUNT" "setSigner(string,address)" "$JWT" "$SIGNER"
-[[ $(call "$ACCOUNT" "signer()(address)") == "$SIGNER" ]] || fail "the account did not set the signer"
-echo "signer $SIGNER"
+[[ $(call "$ACCOUNT" "signer()(address)") == "$SIGNER" ]] || fail "the account did not set the signing key"
+echo "signing key $SIGNER"
 
-step "6. The signer sends 0.5 ETH from the account"
+step "6. The signing key sends 0.5 ETH from the account"
 send --private-key "$SIGNER_KEY" "$ACCOUNT" "execute(address,uint256,bytes)" "$RECIPIENT" 0.5ether 0x
 [[ $(cast balance --rpc-url "$RPC_URL" "$RECIPIENT") == 500000000000000000 ]] ||
   fail "the account did not send 0.5 ETH"
 echo "account balance   $(cast balance --rpc-url "$RPC_URL" --ether "$ACCOUNT") ETH"
 echo "recipient balance $(cast balance --rpc-url "$RPC_URL" --ether "$RECIPIENT") ETH"
 
-step "7. The same JWT cannot set a signer again"
+step "7. The same ID token cannot set a signing key again"
 ERROR=$(call "$ACCOUNT" "setSigner(string,address)" "$JWT" "$SIGNER" 2>&1) &&
-  fail "the JWT was used two times"
+  fail "the ID token was used two times"
 [[ $ERROR == *"$(cast sig 'InvalidJWT()')"* ]] || fail "unexpected error: $ERROR"
 echo "replay rejected with InvalidJWT()"

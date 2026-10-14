@@ -29,17 +29,15 @@ impl Url {
             url.bytes().all(|byte| byte.is_ascii_graphic()),
             "URL has a space or a control character"
         );
-        let (https, rest) = if let Some(rest) = url.strip_prefix("https://") {
-            (true, rest)
-        } else if let Some(rest) = url.strip_prefix("http://") {
-            (false, rest)
-        } else {
-            bail!("URL must start with https:// or http://");
+        let (https, default_port, rest) = match url.split_once("://") {
+            Some(("https", rest)) => (true, 443, rest),
+            Some(("http", rest)) => (false, 80, rest),
+            _ => bail!("URL must start with https:// or http://"),
         };
         let (authority, path) = rest.split_at(rest.find('/').unwrap_or(rest.len()));
         let (host, port) = match authority.split_once(':') {
             Some((host, port)) => (host, port.parse().context("URL port is not valid")?),
-            None => (authority, if https { 443 } else { 80 }),
+            None => (authority, default_port),
         };
         ensure!(!host.is_empty(), "URL has no host");
         Ok(Self {
@@ -47,11 +45,7 @@ impl Url {
             authority: authority.to_owned(),
             host: host.to_owned(),
             port,
-            path: if path.is_empty() {
-                "/".to_owned()
-            } else {
-                path.to_owned()
-            },
+            path: if path.is_empty() { "/" } else { path }.to_owned(),
         })
     }
 }
@@ -117,15 +111,14 @@ fn exchange(mut stream: impl Read + Write, request: &str) -> Result<Vec<u8>> {
     stream.write_all(request.as_bytes())?;
     stream.flush()?;
     let mut response = Vec::new();
-    match stream
+    // Many servers (Google too) close TLS without `close_notify`. This is safe here: a cut
+    // response is not complete JSON, thus `parse_jwks` rejects it.
+    if let Err(error) = stream
         .take(MAX_RESPONSE_BYTES + 1)
         .read_to_end(&mut response)
+        && error.kind() != ErrorKind::UnexpectedEof
     {
-        Ok(_) => {}
-        // Many servers (Google too) close TLS without `close_notify`. This is safe here: a cut
-        // response is not complete JSON, thus `parse_jwks` rejects it.
-        Err(error) if error.kind() == ErrorKind::UnexpectedEof => {}
-        Err(error) => return Err(error.into()),
+        return Err(error.into());
     }
     ensure!(
         response.len() as u64 <= MAX_RESPONSE_BYTES,
