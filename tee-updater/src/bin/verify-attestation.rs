@@ -1,6 +1,6 @@
-//! Verifies the response of an `attest` request and prints the attestor address.
+//! Examines the response of an `attest` request and prints the attestor address.
 //!
-//! Run this tool outside the enclave, before you set the attestor in the registry.
+//! Run this tool on a trusted computer, before you set the attestor in the registry.
 
 use alloy_primitives::{B256, FixedBytes};
 use anyhow::{Context, Result};
@@ -27,7 +27,8 @@ fn main() -> Result<()> {
     let args = Args::parse();
     let response: AttestResponse = serde_json::from_slice(&std::fs::read(&args.response)?)?;
 
-    // This verifies the COSE signature and the certificate chain to the AWS Nitro root certificate.
+    // This examines the COSE signature, and the certificate chain to the AWS Nitro root
+    // certificate at the current time.
     let mut document = UnparsedAttestationDoc::from(&response.attestation_document[..])
         .parse_and_verify(OffsetDateTime::now_utc())?;
     let attestation = Attestation {

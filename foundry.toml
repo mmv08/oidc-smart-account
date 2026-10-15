@@ -18,5 +18,6 @@ number_underscore = "thousands"
 
 [lint]
 # These lints flag code that is correct here: time comparisons, reverts in parser loops, zero
-# addresses that stop updates or remove the signer, and an event after `ecrecover`.
+# addresses (a zero owner or attestor stops all updates, and a zero signer removes the signer), and
+# an event after `ecrecover`.
 exclude_lints = ["block-timestamp", "require-revert-in-loop", "missing-zero-check", "reentrancy-events"]

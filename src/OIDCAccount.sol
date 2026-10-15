@@ -33,7 +33,7 @@ contract OIDCAccount {
         subjectHash = subjectHash_;
     }
 
-    /// @notice Lets the account receive Ether.
+    /// @notice Allows the account to receive Ether.
     receive() external payable { }
 
     /// @notice Sets the signer with a JWT from the issuer.

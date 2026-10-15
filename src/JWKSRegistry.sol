@@ -6,8 +6,8 @@ import { EIP712 } from "@openzeppelin/contracts/utils/cryptography/EIP712.sol";
 
 /// @title JWKS Registry
 /// @notice Keeps a copy of the RSA public keys (the JWKS) of one OIDC issuer.
-/// @dev A TEE updater gets the JWKS from `jwksUri` and signs it with its attestor key. Anyone can
-/// send the signed key set. The owner examines the TEE attestation off-chain and then sets the
+/// @dev A TEE updater gets the JWKS from the JWKS URI and signs it with its attestor key. Anyone
+/// can send the signed key set. The owner examines the TEE attestation off-chain and then sets the
 /// attestor.
 contract JWKSRegistry is EIP712 {
     /// @notice One RSA key of the issuer. The exponent is always 65537.
@@ -66,8 +66,8 @@ contract JWKSRegistry is EIP712 {
 
     /// @notice Sets the TEE key that signs key sets.
     /// @dev This also removes all keys, because the old attestor signed them. The next key set must
-    /// be from after this change. Thus an old key set cannot come back, also when the owner sets the
-    /// same attestor again. Use the zero address to stop all updates.
+    /// be from after this change. Thus an old key set cannot come back. This is also true when the
+    /// owner sets the same attestor again. Use the zero address to stop all updates.
     function setAttestor(address newAttestor) external {
         require(msg.sender == owner, NotOwner());
         attestor = newAttestor;
@@ -77,8 +77,8 @@ contract JWKSRegistry is EIP712 {
     }
 
     /// @notice Replaces all keys with a key set that the attestor signed.
-    /// @dev Anyone can send the key set. Its time must be after the current key set. Thus an old key
-    /// set cannot put back a key that the issuer removed.
+    /// @dev Anyone can send the key set. Its time must be after the time of the current key set.
+    /// Thus an old key set cannot put back a key that the issuer removed.
     /// @param keys All keys in the JWKS at `fetchTime`. An empty array removes all keys.
     /// @param fetchTime Time at which the TEE started to get the JWKS, in Unix seconds.
     /// @param signature Attestor signature of `hashKeySet(keys, fetchTime)`.

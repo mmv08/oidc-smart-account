@@ -20,13 +20,9 @@ abstract contract TestBase is Test {
         registry.setAttestor(vm.addr(ATTESTOR_KEY));
         // The first key set must be after `setAttestor`.
         vm.warp(1_700_000_001);
-        publish(MockIssuer.keys(), 1_700_000_001);
+        JWKSRegistry.Key[] memory keys = MockIssuer.keys();
+        registry.updateKeys(keys, 1_700_000_001, signKeySet(ATTESTOR_KEY, keys, 1_700_000_001));
         verifier = new JWTVerifier(registry, MockIssuer.ISSUER, MockIssuer.AUDIENCE);
-    }
-
-    /// @dev Sends a key set that the attestor signed, as the TEE updater does.
-    function publish(JWKSRegistry.Key[] memory keys, uint64 fetchedAt) internal {
-        registry.updateKeys(keys, fetchedAt, signKeySet(ATTESTOR_KEY, keys, fetchedAt));
     }
 
     function signKeySet(uint256 privateKey, JWKSRegistry.Key[] memory keys, uint64 fetchedAt)

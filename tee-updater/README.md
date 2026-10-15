@@ -2,18 +2,42 @@
 
 The TEE updater copies the JWKS of an OIDC issuer to the key registry contract. It gets the JWKS over HTTPS and signs it with the attestor key. It runs in an AWS Nitro Enclave. For tests and demos, it can also run on a usual computer (local mode).
 
-**Status:** The local mode is tested, and the Docker image builds. The enclave mode has not run on a Nitro instance.
+**Status:** The demo uses the local mode, and the Docker image builds. The enclave mode has not run on a Nitro instance.
 
 ## Security boundary
 
-- TLS ends in the enclave. The host (the parent EC2 instance) only forwards encrypted bytes. Thus the host cannot change the JWKS.
+```mermaid
+flowchart TB
+    issuer["Issuer<br/>(JWKS URL)"]
+
+    subgraph host ["Host: EC2 parent instance (not trusted)"]
+        proxy["vsock-proxy"]
+        subgraph enclave ["Nitro Enclave (trusted)"]
+            updater["TEE updater<br/>(has the attestor key)"]
+        end
+        script["Request script"]
+    end
+
+    owner["Registry owner<br/>(trusted computer)"]
+    registry["Key registry<br/>(on-chain)"]
+
+    issuer <-- "TLS, encrypted" --> proxy
+    proxy <-- "TLS, encrypted" --> updater
+    script -- "request" --> updater
+    updater -- "attestation or<br/>signed key set" --> script
+    script -- "attestation" --> owner
+    owner -- "attestor key" --> registry
+    script -- "signed key set" --> registry
+```
+
+- TLS ends in the enclave. The host (the parent EC2 instance) only moves encrypted bytes between the enclave and the issuer. Thus the host cannot change the JWKS.
 - When the enclave starts, it makes the attestor key from random bytes of the Nitro Secure Module (NSM). The key never leaves the enclave memory.
 - An attestation document shows the measurement of the enclave image (PCR0) and the public part of the attestor key. AWS signs the document. The registry owner examines it before the owner sets the attestor key.
 - The time comes from the NSM, not from the host. The enclave uses this time for the TLS certificate check and for the key set. It reads the time before the HTTPS request. Thus a slow host can only make the key set older.
-- The signature binds the keys and the time to one JWKS URL, one chain, and one key registry.
+- The attestor signs the keys and the time together with the JWKS URL, the chain ID, and the address of the key registry. Thus the signature is correct only for one JWKS URL and one key registry.
 - The host can stop or delay the updates. This design cannot prevent that.
 
-The updater keeps only RSA keys for RS256 signatures with the exponent 65537, because the token verifier cannot use other keys. It ignores other keys, as RFC 7517 recommends. If the JWKS has no such key, the key set is empty, and it removes all keys from the registry.
+The updater keeps only RSA keys for RS256 signatures with the exponent 65537, because the token verifier cannot use other keys. As RFC 7517 recommends, other keys do not cause an error. If the JWKS has no such key, the key set is empty, and it removes all keys from the registry.
 
 ## Local mode
 
@@ -81,13 +105,13 @@ Necessary items: an EC2 instance with Nitro Enclaves, `nitro-cli`, `vsock-proxy`
      --bin verify-attestation -- --response attestation.json --challenge "$CHALLENGE" --pcr0 "$PCR0")
    ```
 
-   The tool verifies the AWS signature and the certificate chain of the document. Then it compares PCR0 and the challenge, and it shows the address of the attestor key. The new random challenge makes sure that the document is new. Then the owner sets the attestor key:
+   The tool examines the AWS signature and the certificate chain of the document. Then it compares PCR0 and the challenge, and it shows the address of the attestor key. The new random challenge makes sure that the document is new. Then the owner sets the attestor key:
 
    ```bash
    cast send "$REGISTRY" "setAttestor(address)" "$ATTESTOR" --rpc-url "$RPC_URL" --private-key "$OWNER_KEY"
    ```
 
-5. Send a key set immediately after step 4. Then send a key set at least one time each day. The registry does not give keys from a key set that is older than one day. The time of each key set must be after step 4 and after the current key set.
+5. Send a key set immediately after step 4. Then send a key set at intervals, for example each hour. A new key of the issuer is on the chain only after the next key set. The registry does not give keys from a key set that is older than one day. The time of each key set must be after step 4 and after the current key set.
 
    ```bash
    python3 tee-updater/scripts/request.py --cid "$CID" \
@@ -102,7 +126,7 @@ When the enclave starts again, it has a new attestor key. Do step 4 and step 5 a
 
 | File | Function |
 | --- | --- |
-| [`src/lib.rs`](src/lib.rs) | JWKS parsing, the EIP-712 hash of a key set, signatures, and attestation checks |
+| [`src/lib.rs`](src/lib.rs) | JWKS reader, the EIP-712 hash of a key set, signatures, and attestation checks |
 | [`src/http.rs`](src/http.rs) | HTTP/1.0 GET over a stream that the caller opens: TCP in local mode, vsock in the enclave |
 | [`src/main.rs`](src/main.rs) | The `sign` command (local mode) and the `serve` command (enclave mode) |
 | [`src/nitro.rs`](src/nitro.rs) | Attestation documents, random bytes, and time from the Nitro Secure Module |
