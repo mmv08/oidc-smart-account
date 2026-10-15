@@ -56,7 +56,7 @@ send --private-key "$OWNER_KEY" "$REGISTRY" "setAttestor(address)" "$ATTESTOR"
 echo "attestor $ATTESTOR"
 
 step "3. The TEE updater gets the JWKS and signs it. Anyone can send the signed key set."
-# The time of the key set must be after the block time of setAttestor.
+# The time of the key set must be after the block time of the attestor change.
 SET_AT=$(call "$REGISTRY" "fetchedAt()(uint256)" | cut -d' ' -f1)
 while (($(date +%s) <= SET_AT)); do sleep 0.2; done
 KEY_SET=$(tee-updater/target/debug/tee-updater sign --jwks-uri "$JWKS_URI" --chain-id 31337 \

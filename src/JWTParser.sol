@@ -7,13 +7,13 @@ import { Strings } from "@openzeppelin/contracts/utils/Strings.sol";
 /// @title JWT JSON Parser
 /// @notice Reads the members of a JWT header and payload that `JWTVerifier` uses.
 /// @dev The parser reads only the top-level members of one JSON object. It finds the end of the
-/// other values, but it does not validate their content: the issuer signature covers the JSON. A
-/// member that the verifier uses must be a string without escapes, or an unsigned integer. A
-/// duplicate member that the verifier uses, or an escape in a member name, causes a revert.
+/// other values, but it does not examine their content, because the issuer signature covers the
+/// JSON. A member that the verifier uses must be a string without escapes, or an unsigned integer.
+/// A duplicate member that the verifier uses, or an escape in a member name, causes a revert.
 library JWTParser {
     using Bytes for bytes;
 
-    /// @notice The JSON is not valid, or a necessary member is missing.
+    /// @notice The JSON is not valid, or it does not have a necessary member.
     error InvalidJSON();
 
     /// @notice JWT claims that `JWTVerifier` uses.
@@ -22,7 +22,7 @@ library JWTParser {
     /// @param sub Subject: the ID of the user at the issuer.
     /// @param nonce Value that binds the JWT to one action.
     /// @param exp Expiry time in Unix seconds.
-    /// @param nbf Not-before time in Unix seconds, or zero if the claim is missing.
+    /// @param nbf Not-before time in Unix seconds, or zero if the JWT does not have this claim.
     struct Claims {
         bytes iss;
         bytes aud;
@@ -33,7 +33,8 @@ library JWTParser {
     }
 
     /// @notice Reads the `alg` and `kid` members of a JWT header.
-    /// @dev Reverts if the header has a `crit` member, because the verifier knows no extensions.
+    /// @dev Reverts if the header has a `crit` member, because the verifier does not know any
+    /// extension.
     function parseHeader(bytes memory json)
         internal
         pure
@@ -118,7 +119,7 @@ library JWTParser {
     }
 
     /// @dev Returns the end of the value that starts at `i`. For an object or an array, it finds the
-    /// closing bracket. It does not validate the content.
+    /// bracket that closes it. It does not examine the content.
     function _skipValue(bytes memory json, uint256 i) private pure returns (uint256) {
         bytes1 c = _at(json, i);
         if (c == '"') return _skipString(json, i);
@@ -144,7 +145,7 @@ library JWTParser {
         return i;
     }
 
-    /// @dev Returns the index after the closing quote of the string that starts at `i`.
+    /// @dev Returns the index after the end quote of the string that starts at `i`.
     function _skipString(bytes memory json, uint256 i) private pure returns (uint256) {
         require(_at(json, i) == '"', InvalidJSON());
         for (++i; _at(json, i) != '"'; ++i) {
@@ -175,7 +176,8 @@ library JWTParser {
         require(success, InvalidJSON());
     }
 
-    /// @dev Reverts if the member flag is already set. This stops duplicate members.
+    /// @dev Adds the flag of a member to `seen`. If `seen` contains the flag, it reverts. This stops
+    /// duplicate members.
     function _mark(uint256 seen, uint256 flag) private pure returns (uint256) {
         require(seen & flag == 0, InvalidJSON());
         return seen | flag;

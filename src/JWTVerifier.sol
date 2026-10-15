@@ -8,7 +8,7 @@ import { JWKSRegistry } from "./JWKSRegistry.sol";
 import { JWTParser } from "./JWTParser.sol";
 
 /// @title JWT Verifier
-/// @notice Verifies RS256 JWTs from one OIDC issuer for one audience.
+/// @notice Examines RS256 JWTs from one OIDC issuer for one audience.
 /// @dev The verifier gets the issuer keys from `registry`. It does not know which action a JWT
 /// approves: the caller must compare the returned nonce hash with its action.
 contract JWTVerifier {
@@ -37,8 +37,9 @@ contract JWTVerifier {
         audienceHash = keccak256(bytes(audience));
     }
 
-    /// @notice Verifies a compact JWT and returns the hashes of its `sub` and `nonce` claims.
-    /// @dev Reverts if the JWT is not valid at the current block time. The verifier ignores `iat`.
+    /// @notice Examines a compact JWT and returns the hashes of its `sub` and `nonce` claims.
+    /// @dev Reverts if the JWT is not valid at the current block time. The verifier does not use
+    /// `iat`.
     /// @param jwt JWT in the format `base64url(header).base64url(payload).base64url(signature)`.
     /// @return subjectHash Keccak-256 hash of the `sub` claim.
     /// @return nonceHash Keccak-256 hash of the `nonce` claim.

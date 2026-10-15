@@ -1,5 +1,6 @@
-//! Minimal HTTP/1.0 client. It sends one GET request over a stream that the caller opens: a TCP
-//! connection on a host, or a vsock connection to the parent proxy in the enclave.
+//! Minimal HTTP/1.0 client. It sends one GET request over a stream that the caller opens. On a
+//! usual computer, the stream is a TCP connection. In the enclave, the stream is a vsock connection
+//! to the proxy on the parent instance.
 
 use anyhow::{Context, Result, bail, ensure};
 use rustls::pki_types::{ServerName, UnixTime};
@@ -52,9 +53,10 @@ impl Url {
 
 /// Sends `GET url` over `stream` and returns the body of a `200` response.
 ///
-/// For `https`, TLS runs over `stream`. The server certificate must be valid for the URL host in
-/// the Mozilla root store at the time `now` (Unix seconds). Thus the party that opens the stream
-/// cannot change the response. In the enclave, `now` comes from the NSM, not from the parent.
+/// For `https`, TLS runs over `stream`. The server must show a certificate for the URL host from a
+/// root certificate in the Mozilla root store. The certificate must be valid at the time `now` (Unix
+/// seconds). Thus the party that opens the stream cannot change the response. In the enclave, `now`
+/// comes from the NSM, not from the parent.
 pub fn get(url: &Url, stream: impl Read + Write, now: u64) -> Result<Vec<u8>> {
     let request = format!(
         "GET {} HTTP/1.0\r\nHost: {}\r\nAccept: application/json\r\n\r\n",
@@ -111,8 +113,8 @@ fn exchange(mut stream: impl Read + Write, request: &str) -> Result<Vec<u8>> {
     stream.write_all(request.as_bytes())?;
     stream.flush()?;
     let mut response = Vec::new();
-    // Many servers (Google too) close TLS without `close_notify`. This is safe here: a cut
-    // response is not complete JSON, thus `parse_jwks` rejects it.
+    // Many servers, Google too, close TLS without `close_notify`. This is safe here, because a cut
+    // response is not complete JSON. Thus `parse_jwks` rejects it.
     if let Err(error) = stream
         .take(MAX_RESPONSE_BYTES + 1)
         .read_to_end(&mut response)

@@ -1,4 +1,4 @@
-//! Shared code of the TEE updater: JWKS parsing, key set signatures, and attestation checks.
+//! Shared code of the TEE updater. It reads the JWKS, signs key sets, and examines attestations.
 
 pub mod http;
 
@@ -79,8 +79,8 @@ struct Jwks {
     keys: Vec<Jwk>,
 }
 
-/// The JWK members that the updater reads. It ignores other members. A duplicate member causes an
-/// error.
+/// The JWK members that the updater reads. It does not read other members. A duplicate member
+/// causes an error.
 #[derive(Deserialize)]
 struct Jwk {
     kty: Option<String>,
@@ -94,8 +94,9 @@ struct Jwk {
 
 /// Reads a JWKS and returns its RS256 signature keys, in the order of their `kid`.
 ///
-/// The verifier can use only RSA keys for RS256 signatures with the exponent 65537. As RFC 7517
-/// recommends, the function ignores all other keys. A duplicate `kid` causes an error.
+/// The verifier can use only RSA keys for RS256 signatures with the exponent 65537. The function
+/// keeps only these keys. As RFC 7517 recommends, other keys do not cause an error. A duplicate
+/// `kid` causes an error.
 pub fn parse_jwks(body: &[u8]) -> Result<Vec<Key>> {
     let jwks: Jwks = serde_json::from_slice(body).context("JWKS is not valid")?;
     let mut keys = BTreeMap::new();
@@ -140,8 +141,8 @@ pub struct Attestation {
 /// Returns the attestor address if the attestation is for the expected enclave image and the
 /// expected challenge.
 ///
-/// Before you call this function, verify the AWS signature of the document. The challenge must be
-/// new and random. Thus the document is new, and an old document cannot be used again.
+/// Before you call this function, examine the AWS signature of the document. The challenge must be
+/// new and random. Thus the document is new, and nobody can use an old document again.
 pub fn check_attestation(
     attestation: &Attestation,
     expected_pcr0: FixedBytes<48>,

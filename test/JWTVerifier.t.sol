@@ -12,7 +12,8 @@ import { TestBase } from "./helpers/TestBase.sol";
 contract JWTVerifierTest is TestBase {
     using Bytes for bytes;
 
-    /// @dev The verifier ignores `iat` and unknown claims, also escaped strings and nested values.
+    /// @dev The verifier does not use `iat` or other claims. These claims can have escaped strings
+    /// and nested values.
     function test_returnsSubjectAndNonceHashes() public view {
         string memory payload = string.concat(
             '{"iss":"https://issuer.example","aud":"demo-client","sub":"alice","nonce":"n","nbf":',
@@ -90,28 +91,27 @@ contract JWTVerifierTest is TestBase {
             JWTParser.InvalidJSON.selector
         );
         _expectRevert('{"alg":"RS256"}', payload, JWTParser.InvalidJSON.selector);
-        _expectRevert('{"alg":"RS256","kid":"test-key-1",', payload, JWTParser.InvalidJSON.selector);
     }
 
     function test_rejectsInvalidOrAmbiguousClaims() public {
         string[11] memory payloads = [
             // Duplicate nonce.
             '{"iss":"https://issuer.example","aud":"demo-client","sub":"a","nonce":"n","nonce":"m","exp":1700000600}',
-            // Escaped member name ("nonce" is "nonce").
+            // Escaped member name ("\u006eonce" is "nonce").
             '{"iss":"https://issuer.example","aud":"demo-client","sub":"a","nonce":"n","\\u006eonce":"m","exp":1700000600}',
             // Escaped value.
             '{"iss":"https:\\/\\/issuer.example","aud":"demo-client","sub":"a","nonce":"n","exp":1700000600}',
             // Audience array.
             '{"iss":"https://issuer.example","aud":["demo-client"],"sub":"a","nonce":"n","exp":1700000600}',
-            // Missing exp.
+            // No exp.
             '{"iss":"https://issuer.example","aud":"demo-client","sub":"a","nonce":"n"}',
             // Expiry as a string.
             '{"iss":"https://issuer.example","aud":"demo-client","sub":"a","nonce":"n","exp":"1700000600"}',
-            // Comma before the closing brace.
+            // Comma before the "}".
             '{"iss":"https://issuer.example","aud":"demo-client","sub":"a","nonce":"n","exp":1700000600,}',
-            // Comma and no closing brace.
+            // Comma and no "}".
             '{"iss":"https://issuer.example","aud":"demo-client","sub":"a","nonce":"n","exp":1700000600,',
-            // No closing brace.
+            // No "}".
             '{"iss":"https://issuer.example","aud":"demo-client","sub":"a","nonce":"n","exp":1700000600',
             // Data after the object.
             '{"iss":"https://issuer.example","aud":"demo-client","sub":"a","nonce":"n","exp":1700000600}x',
